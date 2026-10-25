@@ -182,28 +182,36 @@ jobs:
             2>&1 | xcbeautify
 
       # ──────────────────────────────────────────────────────────────────────────
-      # 7. Build & Archive (unsigned)
+      # 7. Build (unsigned)
+      #    A target build, not `xcodebuild archive -scheme`: scheme builds need the iOS
+      #    simulator platform of the selected Xcode, which the macOS 15 image doesn't have
+      #    for Xcode 16.2 ("Found no destinations"). Device builds only need the SDK.
+      #    DEPLOYMENT_POSTPROCESSING strips the binaries the way an archive does.
       # ──────────────────────────────────────────────────────────────────────────
-      - name: Build & Archive (unsigned)
+      - name: Build (unsigned)
         run: |
           set -o pipefail
-          xcodebuild archive \
+          xcodebuild build \
             -project "$XCODEPROJ" \
-            -scheme "$SCHEME" \
+            -target "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
-            -archivePath "$ARCHIVE_PATH" \
             ONLY_ACTIVE_ARCH=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
-            SKIP_INSTALL=NO \
+            DEPLOYMENT_POSTPROCESSING=YES \
+            STRIP_INSTALLED_PRODUCT=YES \
             2>&1 | xcbeautify
-          # Hard-fail if the archive was not produced
-          test -d "$ARCHIVE_PATH" || (echo "❌ Archive not found at $ARCHIVE_PATH" && exit 1)
-          echo "✅ Archive created: $ARCHIVE_PATH"
+          APP=$(find "$BUILD_DIR" -type d -name "iPSX2.app" -path "*Release-iphoneos*" | head -1 || true)
+          if [ -z "$APP" ]; then
+            echo "❌ iPSX2.app was not built"
+            exit 1
+          fi
+          echo "✅ Built: $APP"
+          echo "APP_PATH=$APP" >> "$GITHUB_ENV"
 
       # ──────────────────────────────────────────────────────────────────────────
       # 8. Assemble unsigned IPA manually
@@ -215,7 +223,7 @@ jobs:
 
           # Search for the .app securely across the whole build/archive directory 
           # AND Xcode's DerivedData! CMake + Xcode often isolates archive payloads there.
-          APP_PATH=$(find "$BUILD_DIR" ~/Library/Developer/Xcode/DerivedData -name "iPSX2*.app" -type d 2>/dev/null | head -1 || true)
+          APP_PATH="${APP_PATH:-$(find "$BUILD_DIR" ~/Library/Developer/Xcode/DerivedData -name "iPSX2*.app" -type d 2>/dev/null | head -1 || true)}"
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
             echo "❌ Could not find .app in $BUILD_DIR or DerivedData"
             # Just for debugging, let's dump where EVERYTHING is
