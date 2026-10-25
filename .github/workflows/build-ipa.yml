@@ -10,8 +10,11 @@ on:
 jobs:
   build-ipa:
     name: Build Unsigned iPSX2.ipa
-    # macOS 14 runners stop on 2026-11-02; macOS 15 still has the same Xcode 16.2.
-    runs-on: macos-15        # Apple Silicon runner — fastest for arm64 iOS
+    # macOS 14 is the image with Xcode 16.2 *and* its iOS 18.2 simulator runtime, which
+    # `xcodebuild archive` and the asset catalog compiler both need. The macOS 15 image has
+    # Xcode 16.2 without that runtime ("Found no destinations", actool "No simulator
+    # runtime"). macOS 14 runners stop on 2026-11-02: move to macos-15 + Xcode 16.4 then.
+    runs-on: macos-14        # Apple Silicon runner — fastest for arm64 iOS
 
     env:
       SCHEME: iPSX2
@@ -182,36 +185,28 @@ jobs:
             2>&1 | xcbeautify
 
       # ──────────────────────────────────────────────────────────────────────────
-      # 7. Build (unsigned)
-      #    A target build, not `xcodebuild archive -scheme`: scheme builds need the iOS
-      #    simulator platform of the selected Xcode, which the macOS 15 image doesn't have
-      #    for Xcode 16.2 ("Found no destinations"). Device builds only need the SDK.
-      #    DEPLOYMENT_POSTPROCESSING strips the binaries the way an archive does.
+      # 7. Build & Archive (unsigned)
       # ──────────────────────────────────────────────────────────────────────────
-      - name: Build (unsigned)
+      - name: Build & Archive (unsigned)
         run: |
           set -o pipefail
-          xcodebuild build \
+          xcodebuild archive \
             -project "$XCODEPROJ" \
-            -target "$SCHEME" \
+            -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
+            -archivePath "$ARCHIVE_PATH" \
             ONLY_ACTIVE_ARCH=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
-            DEPLOYMENT_POSTPROCESSING=YES \
-            STRIP_INSTALLED_PRODUCT=YES \
+            SKIP_INSTALL=NO \
             2>&1 | xcbeautify
-          APP=$(find "$BUILD_DIR" -type d -name "iPSX2.app" -path "*Release-iphoneos*" | head -1 || true)
-          if [ -z "$APP" ]; then
-            echo "❌ iPSX2.app was not built"
-            exit 1
-          fi
-          echo "✅ Built: $APP"
-          echo "APP_PATH=$APP" >> "$GITHUB_ENV"
+          # Hard-fail if the archive was not produced
+          test -d "$ARCHIVE_PATH" || (echo "❌ Archive not found at $ARCHIVE_PATH" && exit 1)
+          echo "✅ Archive created: $ARCHIVE_PATH"
 
       # ──────────────────────────────────────────────────────────────────────────
       # 8. Assemble unsigned IPA manually
