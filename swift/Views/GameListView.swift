@@ -17,7 +17,8 @@ struct GameListView: View {
     @State private var showStopAlert = false
     @State private var pendingGameName: String = ""
     // Without JIT every CPU core silently falls back to the interpreter, so make it visible.
-    @State private var jitAvailable: Bool = iPSX2Bridge.isJITAvailable()
+    // 0 = ready, 1 = not opened from StikDebug, 2 = StikDebug attached but no JIT script.
+    @State private var jitStatus: Int = iPSX2Bridge.jitStatus()
 
     var sortedGames: [ISOEntry] {
         games.sorted { a, b in
@@ -33,7 +34,7 @@ struct GameListView: View {
                     emptyState
                 } else {
                     List {
-                        if !jitAvailable {
+                        if jitStatus != 0 {
                             Section {
                                 jitWarning
                             }
@@ -86,19 +87,23 @@ struct GameListView: View {
         }
         .onAppear {
             loadGames()
-            jitAvailable = iPSX2Bridge.isJITAvailable()
+            jitStatus = iPSX2Bridge.jitStatus()
         }
     }
 
     private var jitWarning: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Label("JIT is off", systemImage: "exclamationmark.triangle.fill")
+            Label(jitStatus == 2 ? "JIT script missing" : "JIT is off", systemImage: "exclamationmark.triangle.fill")
                 .font(.headline)
                 .foregroundStyle(.red)
-            Text("iPSX2 was opened without JIT, so games run in a very slow backup mode. Menus may work, but fights, 3D scenes and loading screens can stay black.")
+            Text(jitStatus == 2
+                 ? "StikDebug is attached, but no script answered iPSX2's JIT request, so games would run in a very slow backup mode."
+                 : "iPSX2 was opened without JIT, so games run in a very slow backup mode. Menus may work, but fights, 3D scenes and loading screens can stay black.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            Text("Close iPSX2, then open it from StikDebug with Enable JIT.")
+            Text(jitStatus == 2
+                 ? "In StikDebug, press and hold iPSX2, tap Assign Script and choose legacy.js. Then close iPSX2 and open it from StikDebug again."
+                 : "Close iPSX2, then open it from StikDebug (with the legacy.js script assigned to iPSX2).")
                 .font(.subheadline)
                 .fontWeight(.semibold)
         }
@@ -204,7 +209,7 @@ struct GameListView: View {
 
     private var emptyState: some View {
         VStack(spacing: 16) {
-            if !jitAvailable {
+            if jitStatus != 0 {
                 jitWarning
                     .padding()
                     .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))

@@ -98,6 +98,12 @@ namespace SysMemory
 	void Reset();
 	void Release();
 
+#ifdef __APPLE__
+	/// iOS: allocate and TXM-register the JIT code region early (see DarwinMisc::ReserveCodeMemoryEarly).
+	/// Returns 1 = ready, 0 = not applicable, -1 = StikDebug's script did not answer.
+	int ReserveCodeMemoryForJIT();
+#endif
+
 	/// Returns data memory (Main in Memory Map).
 	u8* GetDataPtr(size_t offset);
 

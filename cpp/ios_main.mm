@@ -59,6 +59,9 @@ struct rc_client_t;
 #import <UIKit/UIKit.h>
 #include <mach-o/dyld.h>
 #include "common/Darwin/DarwinMisc.h" // For iPSX2_CRASH_DIAG
+
+// pcsx2/Memory.cpp: allocate + TXM-register the JIT code region early (1 ready, 0 n/a, -1 no script).
+namespace SysMemory { int ReserveCodeMemoryForJIT(); }
 #include "3rdparty/simpleini/include/SimpleIni.h"
 #include "pcsx2/INISettingsInterface.h"
 
@@ -1315,22 +1318,48 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
 // CS_DEBUGGED check only (DolphiniOS approach) — no blocking, runs on main thread
 - (void)checkJITAndStartVM {
 #if !TARGET_OS_SIMULATOR
+    bool scriptMissing = false;
     if (DarwinMisc::IsJITAvailable()) {
-        Console.WriteLn("@@JIT_GATE@@ JIT available — starting VM in JIT mode");
-        [[VMController sharedInstance] startVMThread];
-        return;
+        // iOS 26+ (TXM): the JIT region must be registered through StikDebug's script. That
+        // normally happened at launch (didFinishLaunching); if it didn't, e.g. the script
+        // attached late, try once more before the VM thread allocates its memory. Once the VM
+        // thread exists, its memory is already set up.
+        const int txm = s_vmThreadCreated.load() ? 1 : SysMemory::ReserveCodeMemoryForJIT();
+        if (txm != -1) {
+            Console.WriteLn("@@JIT_GATE@@ JIT available — starting VM in JIT mode");
+            [[VMController sharedInstance] startVMThread];
+            return;
+        }
+        scriptMissing = true;
     }
 
     // Without JIT every CPU core (EE, IOP, VU0, VU1) runs on the interpreter. Menus can still
     // work, but 3D scenes and loading screens crawl, which looks exactly like a game-specific
     // black-screen hang. Ask the user instead of silently falling back.
-    Console.Warning("@@JIT_GATE@@ JIT NOT available — asking user before falling back to Interpreter mode");
+    if (scriptMissing)
+        Console.Warning("@@JIT_GATE@@ debugger attached but no script answered brk #0x69 — asking user before falling back to Interpreter mode");
+    else
+        Console.Warning("@@JIT_GATE@@ JIT NOT available — asking user before falling back to Interpreter mode");
 
     void (^startWithInterpreter)(void) = ^{
+        // With a debugger attached but no TXM registration, the JIT allocation path would fail;
+        // use the plain allocation the no-debugger fallback uses.
+        if (scriptMissing)
+            DarwinMisc::ForceLegacyJitMode();
         DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
         Console.WriteLn("@@JIT_GATE@@ iPSX2_FORCE_EE_INTERP forced to 1");
         [[VMController sharedInstance] startVMThread];
     };
+
+    NSString* alertTitle = scriptMissing ? @"JIT script missing" : @"JIT is off";
+    NSString* alertMessage = scriptMissing
+        ? @"StikDebug is attached, but no script answered iPSX2's JIT request (iOS and iPadOS 26 and later need one), "
+          @"so JIT can't be used and games would run in a very slow backup mode.\n\n"
+          @"To fix it: in StikDebug, press and hold iPSX2, tap Assign Script and choose legacy.js. "
+          @"Then close iPSX2 and open it from StikDebug again."
+        : @"iPSX2 was opened without JIT, so games will run in a very slow backup mode. "
+          @"Menus may work, but fights, 3D scenes and loading screens can stay black.\n\n"
+          @"To fix it: close iPSX2, then open it from StikDebug (with the legacy.js script assigned to iPSX2).";
 
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController* presenter = s_rootVC;
@@ -1344,12 +1373,9 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
             return;
         }
 
-        UIAlertController* alert = [UIAlertController
-            alertControllerWithTitle:@"JIT is off"
-                             message:@"iPSX2 was opened without JIT, so games will run in a very slow backup mode. "
-                                     @"Menus may work, but fights, 3D scenes and loading screens can stay black.\n\n"
-                                     @"To fix it: close iPSX2, then open it from StikDebug with Enable JIT."
-                      preferredStyle:UIAlertControllerStyleAlert];
+        UIAlertController* alert = [UIAlertController alertControllerWithTitle:alertTitle
+                                                                       message:alertMessage
+                                                                preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
                                                   style:UIAlertActionStyleCancel
                                                 handler:^(UIAlertAction* action) {
@@ -1478,7 +1504,17 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
     Log::SetConsoleOutputLevel(LOGLEVEL::LOGLEVEL_INFO);
     
     Console.WriteLn("PCSX2 iOS: AppDelegate didFinishLaunching.");
-    
+
+#if !TARGET_OS_SIMULATOR
+    // On iOS 26+ (TXM) StikDebug's legacy.js answers a single `brk #0x69` and then detaches.
+    // Do that handshake now, while the script is attached, instead of when the first game is
+    // started (by then StikDebug may have been suspended in the background).
+    {
+        const int reserved = SysMemory::ReserveCodeMemoryForJIT();
+        Console.WriteLn("@@JIT_EARLY@@ result=%d txm_state=%d", reserved, DarwinMisc::GetTXMRegistrationState());
+    }
+#endif
+
     return YES;
 }
 

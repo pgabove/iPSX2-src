@@ -76,6 +76,9 @@ typedef NS_ENUM(NSInteger, iPSX2PadButton) {
 // YES when a debugger (StikDebug) has enabled JIT for this launch. Without it every
 // CPU core silently falls back to the interpreter, which is far too slow for 3D games.
 + (BOOL)isJITAvailable;
+// 0 = JIT ready, 1 = not opened from StikDebug, 2 = StikDebug attached but no script
+// answered iPSX2's JIT request (iOS 26+ needs legacy.js assigned to iPSX2).
++ (NSInteger)jitStatus;
 
 // OSD overlay
 + (void)setPerformanceOverlayVisible:(BOOL)visible;

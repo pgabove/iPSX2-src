@@ -163,6 +163,13 @@ u8* SysMemory::AllocateVirtualMemory(const char* name, void* file_handle, size_t
 	return nullptr;
 }
 
+#ifdef __APPLE__
+int SysMemory::ReserveCodeMemoryForJIT()
+{
+	return DarwinMisc::ReserveCodeMemoryEarly(HostMemoryMap::CodeSize);
+}
+#endif
+
 bool SysMemory::AllocateMemoryMap()
 {
 	s_data_memory_file_handle = HostSys::CreateSharedMemory(HostSys::GetFileMappingName("pcsx2").c_str(), HostMemoryMap::MainSize);
@@ -182,6 +189,14 @@ bool SysMemory::AllocateMemoryMap()
 
 	if ((s_code_memory = AllocateVirtualMemory("Code Memory", nullptr, HostMemoryMap::CodeSize, HostMemoryMap::MainSize)) == nullptr)
 	{
+#ifdef __APPLE__
+		if (DarwinMisc::GetTXMRegistrationState() < 0)
+			Host::ReportErrorAsync("JIT script missing",
+				"StikDebug is attached, but no script answered iPSX2's JIT request, so the emulator can't start.\n\n"
+				"In StikDebug: press and hold iPSX2, tap Assign Script and choose legacy.js. "
+				"Then close iPSX2 and open it from StikDebug again.");
+		else
+#endif
 		Host::ReportErrorAsync("Error", "Failed to allocate code memory at an acceptable location.");
 		ReleaseMemoryMap();
 		return false;

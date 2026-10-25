@@ -631,6 +631,15 @@ static size_t s_legacy_code_size = 0;
 static bool s_legacy_is_writable = true;  // starts RW after mmap
 static bool s_legacy_code_dirty = false;   // code written since last RX flip
 
+// JIT code region reserved (and TXM-registered) at app launch by ReserveCodeMemoryEarly(),
+// then handed to the VM by MmapCodeDualMap(). StikDebug's legacy.js answers exactly one
+// `brk #0x69` and then detaches, so doing the handshake at launch, while the script is
+// certainly attached, avoids depending on StikDebug staying alive until a game is started.
+static void* s_reserved_code_rx = nullptr;
+static size_t s_reserved_code_size = 0;
+// 0 = not attempted, 1 = TXM registration done, -1 = brk #0x69 not answered (no script)
+static int s_txm_registration_state = 0;
+
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 static bool HasTXM()
 {
@@ -693,6 +702,15 @@ DarwinMisc::JitMode DarwinMisc::GetJitMode()
 // [P43] Allocate executable code memory with dual-mapping for iOS 26
 void* DarwinMisc::MmapCodeDualMap(size_t size)
 {
+    // Hand out the region that was already registered at app launch.
+    if (s_reserved_code_rx && size == s_reserved_code_size) {
+        void* reserved = s_reserved_code_rx;
+        s_reserved_code_rx = nullptr;
+        s_reserved_code_size = 0;
+        fprintf(stderr, "@@JIT_ALLOC@@ using code region reserved at launch rx=%p size=0x%zx\n", reserved, size);
+        return reserved;
+    }
+
     JitMode mode = GetJitMode();
 
     // Note: fastmem is auto-disabled in vtlb_Core_Alloc if 4GB allocation fails.
@@ -783,22 +801,36 @@ void* DarwinMisc::MmapCodeDualMap(size_t size)
         bool brk_ok = false;
         fprintf(stderr, "@@JIT_ALLOC@@ issuing brk #0x69 for TXM registration (x0=%p x1=0x%zx)...\n", rx_ptr, size);
         if (sigsetjmp(s_alloc_brk_jmp, 1) == 0) {
-            asm volatile("mov x0, %0\n"
-                         "mov x1, %1\n"
-                         "brk #0x69"
-                         :: "r"(rx_ptr), "r"(size) : "x0", "x1");
-            fprintf(stderr, "@@JIT_ALLOC@@ brk #0x69 OK (StikDebug handled)\n");
-            brk_ok = true;
+            // StikDebug's legacy.js leaves x0 untouched after preparing the region. Its
+            // universal.js refuses this legacy request: it skips the brk but writes an error
+            // code into x0 without registering anything, so check x0 afterwards.
+            uint64_t x0_after = 0;
+            asm volatile("mov x0, %1\n"
+                         "mov x1, %2\n"
+                         "brk #0x69\n"
+                         "mov %0, x0"
+                         : "=r"(x0_after)
+                         : "r"(rx_ptr), "r"(size)
+                         : "x0", "x1");
+            if (x0_after == reinterpret_cast<uint64_t>(rx_ptr)) {
+                fprintf(stderr, "@@JIT_ALLOC@@ brk #0x69 OK (StikDebug handled)\n");
+                brk_ok = true;
+            } else {
+                fprintf(stderr, "@@JIT_ALLOC@@ brk #0x69 refused by the StikDebug script (x0=0x%llx) — assign legacy.js, not universal.js\n",
+                        (unsigned long long)x0_after);
+            }
         } else {
             fprintf(stderr, "@@JIT_ALLOC@@ brk #0x69 SIGTRAP — StikDebug not handling brk\n");
         }
         sigaction(SIGTRAP, &sa_brk_old, NULL);
 
         if (!brk_ok) {
-            fprintf(stderr, "@@JIT_ALLOC@@ FATAL: TXM registration failed — ensure StikDebug launched iPSX2\n");
+            s_txm_registration_state = -1;
+            fprintf(stderr, "@@JIT_ALLOC@@ FATAL: TXM registration failed — ensure StikDebug launched iPSX2 with the legacy.js script\n");
             munmap(rx_ptr, size);
             return nullptr;
         }
+        s_txm_registration_state = 1;
     }
 
     // Step 3: Create RW alias via vm_remap
@@ -857,6 +889,42 @@ void DarwinMisc::MunmapCodeDualMap(void* rx_ptr, size_t size)
 
     munmap(rx_ptr, size);
     g_code_rw_offset = 0;
+}
+
+int DarwinMisc::ReserveCodeMemoryEarly(size_t size)
+{
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    if (s_reserved_code_rx)
+        return 1;
+    if (!IsJITAvailable())
+        return 0; // no debugger attached: nothing to register with
+    if (GetJitMode() != JitMode::LuckTXM)
+        return 0; // only iOS 26+ (TXM) needs the brk #0x69 handshake
+    void* rx = MmapCodeDualMap(size);
+    if (!rx)
+        return (s_txm_registration_state < 0) ? -1 : 0;
+    s_reserved_code_rx = rx;
+    s_reserved_code_size = size;
+    fprintf(stderr, "@@JIT_ALLOC@@ code region reserved early rx=%p size=0x%zx\n", rx, size);
+    return 1;
+#else
+    (void)size;
+    return 0;
+#endif
+}
+
+int DarwinMisc::GetTXMRegistrationState()
+{
+    return s_txm_registration_state;
+}
+
+void DarwinMisc::ForceLegacyJitMode()
+{
+    // Interpreter fallback when TXM registration is impossible: allocate code memory without
+    // the brk #0x69 handshake (plain RW mapping, same as launching without a debugger).
+    s_jit_mode = JitMode::Legacy;
+    s_jit_mode_detected = true;
+    fprintf(stderr, "@@JIT_MODE@@ forced to Legacy for interpreter fallback\n");
 }
 
 // [P45-2] JIT availability — CS_DEBUGGED only (DolphiniOS approach)

@@ -119,6 +119,15 @@ struct CPUClass {
     // Free dual-mapped code memory
     void MunmapCodeDualMap(void* rx_ptr, size_t size);
 
+    // Allocate + TXM-register the JIT code region at app launch, while StikDebug's script is
+    // attached; MmapCodeDualMap() later hands this region to the VM.
+    // Returns 1 = ready, 0 = not applicable (no debugger / not iOS 26+), -1 = no script answered.
+    int ReserveCodeMemoryEarly(size_t size);
+    // 0 = not attempted, 1 = registered, -1 = brk #0x69 was not answered by StikDebug's script
+    int GetTXMRegistrationState();
+    // Use the plain (non-TXM) allocation path so the interpreter fallback can still start.
+    void ForceLegacyJitMode();
+
     // [P49] Legacy lazy toggle: flip RW→RX + icache flush before JIT dispatch.
     // Call this once before entering JIT code (e.g., in recExecute dispatcher).
     // No-op on non-Legacy modes.

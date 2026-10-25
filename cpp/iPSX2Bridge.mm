@@ -23,6 +23,7 @@ extern "C" SDL_Gamepad* iPSX2_GetActiveGamepad();
 #include "pcsx2/INISettingsInterface.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
+#include "common/Darwin/DarwinMisc.h"
 
 // Access the global settings interface from ios_main.mm
 extern INISettingsInterface* g_p44_settings_interface;
@@ -143,16 +144,21 @@ static NSDate* s_lastNVMSaveDate = nil;
 }
 
 + (BOOL)isJITAvailable {
+    return [self jitStatus] == 0 ? YES : NO;
+}
+
++ (NSInteger)jitStatus {
 #if TARGET_OS_SIMULATOR
-    return YES;
+    return 0;
 #else
     // Same test as DarwinMisc::IsJITAvailable() (CS_DEBUGGED is set once StikDebug has
     // attached), but without its logging and JIT-mode side effects, so the UI can call
     // it as often as it likes.
     uint32_t cs_flags = 0;
-    if (csops(getpid(), 0, &cs_flags, sizeof(cs_flags)) != 0)
-        return NO;
-    return (cs_flags & 0x10000000u) != 0 ? YES : NO;
+    if (csops(getpid(), 0, &cs_flags, sizeof(cs_flags)) != 0 || (cs_flags & 0x10000000u) == 0)
+        return 1;
+    // Attached, but the iOS 26+ JIT handshake (done at launch) was not answered by a script.
+    return DarwinMisc::GetTXMRegistrationState() < 0 ? 2 : 0;
 #endif
 }
 
