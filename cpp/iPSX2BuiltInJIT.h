@@ -62,6 +62,10 @@ typedef NS_ENUM(NSInteger, iPSX2BuiltInJITProblem) {
 + (void)resetDeveloperDiskImage;
 
 @property (class, nonatomic, readonly) BOOL isLocalDevVPNInstalled;
+/// LocalDevVPN's tunnel (a utun interface in 10.7.0.0/16) is up right now.
+@property (class, nonatomic, readonly) BOOL isLocalDevVPNConnected;
+/// When the tunnel is down, enable opens LocalDevVPN for a moment to connect it (default YES).
+@property (class, nonatomic) BOOL autoConnectLocalDevVPN;
 /// Opens LocalDevVPN so it connects and comes back to iPSX2 (or its App Store page).
 + (void)openLocalDevVPN;
 

@@ -17,6 +17,9 @@ final class BuiltInJITModel: @unchecked Sendable {
     private(set) var unavailableReason: String?
     private(set) var setupCheckText: String?
     private(set) var isLocalDevVPNInstalled = false
+    private(set) var isLocalDevVPNConnected = false
+    /// Open LocalDevVPN for a moment to connect it when its tunnel is down (stored by iPSX2BuiltInJIT).
+    private(set) var autoConnectLocalDevVPN = true
     /// Turn JIT on automatically when iPSX2 opens (stored by iPSX2BuiltInJIT).
     private(set) var enableAtLaunch = true
 
@@ -46,7 +49,14 @@ final class BuiltInJITModel: @unchecked Sendable {
         unavailableReason = iPSX2BuiltInJIT.unavailableReason
         setupCheckText = iPSX2BuiltInJIT.setupCheckText
         isLocalDevVPNInstalled = iPSX2BuiltInJIT.isLocalDevVPNInstalled
+        isLocalDevVPNConnected = iPSX2BuiltInJIT.isLocalDevVPNConnected
+        autoConnectLocalDevVPN = iPSX2BuiltInJIT.autoConnectLocalDevVPN
         enableAtLaunch = iPSX2BuiltInJIT.enableAtLaunch
+    }
+
+    func setAutoConnectLocalDevVPN(_ on: Bool) {
+        iPSX2BuiltInJIT.autoConnectLocalDevVPN = on
+        refresh()
     }
 
     func setEnableAtLaunch(_ on: Bool) {

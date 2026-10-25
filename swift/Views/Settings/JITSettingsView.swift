@@ -80,6 +80,16 @@ struct JITSettingsView: View {
                     get: { jit.enableAtLaunch },
                     set: { jit.setEnableAtLaunch($0) }
                 ))
+                HStack {
+                    Text("LocalDevVPN")
+                    Spacer()
+                    Text(!jit.isLocalDevVPNInstalled ? "Not installed" : (jit.isLocalDevVPNConnected ? "Connected" : "Not connected"))
+                        .foregroundStyle(jit.isLocalDevVPNConnected ? Color.green : Color.secondary)
+                }
+                Toggle("Connect LocalDevVPN Automatically", isOn: Binding(
+                    get: { jit.autoConnectLocalDevVPN },
+                    set: { jit.setAutoConnectLocalDevVPN($0) }
+                ))
                 Button(jit.localDevVPNTitle) { jit.openLocalDevVPN() }
                 Button("Check Setup") { jit.checkSetup() }
                     .disabled(jit.isBusy || !jit.isAvailable || !jit.hasPairingFile)
@@ -93,7 +103,7 @@ struct JITSettingsView: View {
             } header: {
                 Text("Built-in JIT")
             } footer: {
-                Text("Check Setup tests LocalDevVPN and downloads and mounts Apple's Developer Disk Image (once per restart of the device). If setup keeps failing after an iOS update, reset the Developer Disk Image, restart the device and try again.")
+                Text("With Connect LocalDevVPN Automatically on, iPSX2 opens LocalDevVPN for a moment when its tunnel is off, and LocalDevVPN sends you straight back. Check Setup tests LocalDevVPN and downloads and mounts Apple's Developer Disk Image (once per restart of the device). If setup keeps failing after an iOS update, reset the Developer Disk Image, restart the device and try again.")
             }
         }
         .navigationTitle("JIT")

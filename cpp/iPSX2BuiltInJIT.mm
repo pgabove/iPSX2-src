@@ -13,9 +13,14 @@
 #import "iPSX2BuiltInJIT.h"
 
 #include <TargetConditionals.h>
+#include <arpa/inet.h>
 #include <dlfcn.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "common/Darwin/DarwinMisc.h"
@@ -31,6 +36,10 @@ static NSString* const kHelperFile = @"iPSX2JITHelper.appex";
 static NSString* const kRequestKey = @"ipsx2-jit-request";
 static NSString* const kResponseKey = @"ipsx2-jit-response";
 static NSString* const kEnableAtLaunchKey = @"iPSX2BuiltInJITAtLaunch";
+static NSString* const kAutoConnectVPNKey = @"iPSX2AutoConnectLocalDevVPN";
+// LocalDevVPN connects, then opens ipsx2:// to come back (its "scheme" parameter).
+static NSString* const kLocalDevVPNConnectURL = @"localdevvpn://enable?scheme=ipsx2";
+static NSString* const kLocalDevVPNAppStoreURL = @"https://apps.apple.com/us/app/localdevvpn/id6755608044";
 static NSString* const kErrorDomain = @"iPSX2BuiltInJIT";
 // The first attempt also downloads Apple's Developer Disk Image, so allow plenty of time.
 static const NSTimeInterval kAttachTimeout = 180;
@@ -52,6 +61,10 @@ static BOOL s_wasDebuggedAtStart = NO;
 static BOOL s_helperPending = NO;
 static NSTimer* s_attachTimer = nil;
 static NSDate* s_attachDeadline = nil;
+
+// An attempt that first sent iPSX2 to LocalDevVPN to connect its tunnel.
+static BOOL s_waitingForLocalDevVPN = NO;
+static NSTimer* s_tunnelTimer = nil;
 
 static void JITLog(NSString* format, ...) NS_FORMAT_FUNCTION(1, 2);
 static void JITLog(NSString* format, ...)
@@ -151,6 +164,40 @@ static NSString* UnavailableReason(void)
                @"on JIT (StikDebug can't either). It needs to be signed with a development certificate.";
     return nil;
 #endif
+}
+
+#pragma mark - LocalDevVPN
+
+// LocalDevVPN's tunnel is a utun interface with an address in 10.7.0.0/16 (10.7.1.1 now,
+// 10.7.0.x in StosVPN); StikJIT reaches this device through it at 10.7.0.1.
+static BOOL IsLocalDevVPNTunnelUp(void)
+{
+    struct ifaddrs* list = NULL;
+    if (getifaddrs(&list) != 0)
+        return NO;
+    BOOL up = NO;
+    for (struct ifaddrs* ifa = list; ifa && !up; ifa = ifa->ifa_next)
+    {
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET || !ifa->ifa_name)
+            continue;
+        if (strncmp(ifa->ifa_name, "utun", 4) != 0 || !(ifa->ifa_flags & IFF_UP))
+            continue;
+        const uint32_t address = ntohl(((const struct sockaddr_in*)ifa->ifa_addr)->sin_addr.s_addr);
+        up = (address & 0xFFFF0000u) == 0x0A070000u;
+    }
+    freeifaddrs(list);
+    return up;
+}
+
+static BOOL LocalDevVPNInstalled(void)
+{
+    return [UIApplication.sharedApplication canOpenURL:[NSURL URLWithString:@"localdevvpn://"]];
+}
+
+static BOOL AutoConnectLocalDevVPN(void)
+{
+    id value = [[NSUserDefaults standardUserDefaults] objectForKey:kAutoConnectVPNKey];
+    return value ? [value boolValue] : YES;
 }
 
 #pragma mark - Pairing file
@@ -593,6 +640,121 @@ static BOOL ShouldForceScript(void)
     return NSProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26;
 }
 
+// Starts the helper and waits for it to attach (the actual enable attempt).
+static void StartHelperAttempt(NSData* pairing)
+{
+    s_busy = YES;
+    s_attempting = YES;
+    s_attachHandled = NO;
+    s_helperPending = YES;
+    s_wasDebuggedAtStart = IsCSDebugged();
+    s_status = @"Starting iPSX2's JIT helper…";
+    s_error = nil;
+    s_problem = iPSX2BuiltInJITProblemNoProblem;
+    PostChange();
+    RegisterProgressObservers();
+
+    const BOOL forceScript = ShouldForceScript();
+    JITLog(@"enable: pid=%d debuggedAtStart=%d forceScript=%d get-task-allow=%d", getpid(), s_wasDebuggedAtStart ? 1 : 0,
+        forceScript ? 1 : 0, GetTaskAllowState());
+
+    // Poll from the start: the attach is what matters, not when the helper's process starts.
+    s_attachDeadline = [NSDate dateWithTimeIntervalSinceNow:kAttachTimeout];
+    StopAttachTimer();
+    s_attachTimer = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer* timer) {
+        (void)timer;
+        CheckAttach(NO);
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:s_attachTimer forMode:NSRunLoopCommonModes];
+
+    NSDictionary* request = @{
+        @"operation": @"enable",
+        @"targetPID": @(getpid()),
+        @"pairingData": [pairing base64EncodedStringWithOptions:0],
+        @"forceScript": @(forceScript),
+        @"progressName": ProgressPrefix(),
+    };
+    SendToHelper(request, ^(int pid) {
+        (void)pid;
+        if (s_attempting && !s_attachHandled)
+        {
+            s_status = @"Waiting for iPSX2's JIT helper to attach…";
+            PostChange();
+        }
+    }, ^(NSDictionary* response, NSString* failure) {
+        s_helperPending = NO;
+        LogHelperResponse(response, failure);
+        NSString* message = failure ?: ([response[@"message"] isKindOfClass:NSString.class] ? response[@"message"] : @"Unknown error.");
+        const BOOL ok = failure == nil && [response[@"success"] boolValue];
+        if (!s_attempting)
+            return; // the attempt already ended; this is the helper detaching (or a late error, logged above)
+        if (!ok)
+        {
+            const iPSX2BuiltInJITProblem problem = ProblemForMessage(message);
+            FinishAttempt(NO, FailureText(message, problem), problem);
+            return;
+        }
+        // Finished before the attach was noticed: StikJIT attached and detached (no TXM).
+        CheckAttach(YES);
+    });
+}
+
+// Continues an attempt once iPSX2 is back from LocalDevVPN: waits a moment for its tunnel to
+// come up, then starts the helper (which reports clearly if LocalDevVPN still isn't connected).
+static void ContinueAfterLocalDevVPN(void)
+{
+    if (!s_waitingForLocalDevVPN)
+        return;
+    s_waitingForLocalDevVPN = NO;
+    s_status = @"Waiting for LocalDevVPN to connect…";
+    PostChange();
+    __block int checks = 0;
+    [s_tunnelTimer invalidate];
+    s_tunnelTimer = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer* timer) {
+        const BOOL up = IsLocalDevVPNTunnelUp();
+        if (!up && ++checks < 32) // up to 8 seconds
+            return;
+        [timer invalidate];
+        s_tunnelTimer = nil;
+        JITLog(@"LocalDevVPN %@", up ? @"is connected" : @"is still not connected after 8 seconds; trying anyway");
+        s_busy = NO;
+        NSData* pairing = ReadPairingFile();
+        if (!pairing)
+        {
+            Fail(@"Import your pairing file first.", iPSX2BuiltInJITProblemNoPairingFile);
+            return;
+        }
+        if (iPSX2_VMThreadWasCreated())
+        {
+            Fail(RestartText(), iPSX2BuiltInJITProblemRestartNeeded);
+            return;
+        }
+        StartHelperAttempt(pairing);
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:s_tunnelTimer forMode:NSRunLoopCommonModes];
+}
+
+// The tunnel is down: let LocalDevVPN connect it (it comes straight back to iPSX2), then carry on.
+static void ConnectLocalDevVPNThenStart(void)
+{
+    s_busy = YES;
+    s_waitingForLocalDevVPN = YES;
+    s_status = @"Connecting LocalDevVPN… iPSX2 opens it for a moment and comes right back.";
+    s_error = nil;
+    s_problem = iPSX2BuiltInJITProblemNoProblem;
+    PostChange();
+    JITLog(@"LocalDevVPN is not connected: opening it to connect");
+    [UIApplication.sharedApplication openURL:[NSURL URLWithString:kLocalDevVPNConnectURL]
+                                     options:@{}
+                           completionHandler:^(BOOL opened) {
+        if (!opened)
+        {
+            JITLog(@"LocalDevVPN could not be opened; trying anyway");
+            ContinueAfterLocalDevVPN();
+        }
+    }];
+}
+
 #pragma mark - iPSX2BuiltInJIT
 
 @implementation iPSX2BuiltInJIT
@@ -617,6 +779,16 @@ static BOOL ShouldForceScript(void)
     [[NSUserDefaults standardUserDefaults] setBool:enableAtLaunch forKey:kEnableAtLaunchKey];
     PostChange();
 }
+
++ (BOOL)autoConnectLocalDevVPN { return AutoConnectLocalDevVPN(); }
+
++ (void)setAutoConnectLocalDevVPN:(BOOL)autoConnectLocalDevVPN
+{
+    [[NSUserDefaults standardUserDefaults] setBool:autoConnectLocalDevVPN forKey:kAutoConnectVPNKey];
+    PostChange();
+}
+
++ (BOOL)isLocalDevVPNConnected { return IsLocalDevVPNTunnelUp(); }
 
 + (BOOL)importPairingFileFromURL:(NSURL*)url error:(NSError**)error
 {
@@ -683,60 +855,21 @@ static BOOL ShouldForceScript(void)
         return;
     }
 
-    s_busy = YES;
-    s_attempting = YES;
-    s_attachHandled = NO;
-    s_helperPending = YES;
-    s_wasDebuggedAtStart = IsCSDebugged();
-    s_status = @"Starting iPSX2's JIT helper…";
-    s_error = nil;
-    s_problem = iPSX2BuiltInJITProblemNoProblem;
-    PostChange();
-    RegisterProgressObservers();
-
-    const BOOL forceScript = ShouldForceScript();
-    JITLog(@"enable: pid=%d debuggedAtStart=%d forceScript=%d get-task-allow=%d", getpid(), s_wasDebuggedAtStart ? 1 : 0,
-        forceScript ? 1 : 0, GetTaskAllowState());
-
-    // Poll from the start: the attach is what matters, not when the helper's process starts.
-    s_attachDeadline = [NSDate dateWithTimeIntervalSinceNow:kAttachTimeout];
-    StopAttachTimer();
-    s_attachTimer = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer* timer) {
-        (void)timer;
-        CheckAttach(NO);
-    }];
-    [[NSRunLoop mainRunLoop] addTimer:s_attachTimer forMode:NSRunLoopCommonModes];
-
-    NSDictionary* request = @{
-        @"operation": @"enable",
-        @"targetPID": @(getpid()),
-        @"pairingData": [pairing base64EncodedStringWithOptions:0],
-        @"forceScript": @(forceScript),
-        @"progressName": ProgressPrefix(),
-    };
-    SendToHelper(request, ^(int pid) {
-        (void)pid;
-        if (s_attempting && !s_attachHandled)
+    if (!IsLocalDevVPNTunnelUp())
+    {
+        if (!LocalDevVPNInstalled())
         {
-            s_status = @"Waiting for iPSX2's JIT helper to attach…";
-            PostChange();
-        }
-    }, ^(NSDictionary* response, NSString* failure) {
-        s_helperPending = NO;
-        LogHelperResponse(response, failure);
-        NSString* message = failure ?: ([response[@"message"] isKindOfClass:NSString.class] ? response[@"message"] : @"Unknown error.");
-        const BOOL ok = failure == nil && [response[@"success"] boolValue];
-        if (!s_attempting)
-            return; // the attempt already ended; this is the helper detaching (or a late error, logged above)
-        if (!ok)
-        {
-            const iPSX2BuiltInJITProblem problem = ProblemForMessage(message);
-            FinishAttempt(NO, FailureText(message, problem), problem);
+            Fail(@"LocalDevVPN isn't installed. Built-in JIT reaches this device through it: get LocalDevVPN "
+                 @"(free) from the App Store, then try again.", iPSX2BuiltInJITProblemNotConnected);
             return;
         }
-        // Finished before the attach was noticed: StikJIT attached and detached (no TXM).
-        CheckAttach(YES);
-    });
+        if (AutoConnectLocalDevVPN())
+        {
+            ConnectLocalDevVPNThenStart();
+            return;
+        }
+    }
+    StartHelperAttempt(pairing);
 }
 
 + (void)checkSetup
@@ -804,23 +937,27 @@ static BOOL ShouldForceScript(void)
     });
 }
 
-+ (BOOL)isLocalDevVPNInstalled
-{
-    return [UIApplication.sharedApplication canOpenURL:[NSURL URLWithString:@"localdevvpn://"]];
-}
++ (BOOL)isLocalDevVPNInstalled { return LocalDevVPNInstalled(); }
 
 + (void)openLocalDevVPN
 {
     s_openedLocalDevVPNAt = [NSDate date];
     // "scheme" makes LocalDevVPN come back to iPSX2 (ipsx2://) once it is connected.
-    NSURL* url = self.isLocalDevVPNInstalled ? [NSURL URLWithString:@"localdevvpn://enable?scheme=ipsx2"]
-                                             : [NSURL URLWithString:@"https://apps.apple.com/us/app/localdevvpn/id6755608044"];
+    NSURL* url = LocalDevVPNInstalled() ? [NSURL URLWithString:kLocalDevVPNConnectURL]
+                                        : [NSURL URLWithString:kLocalDevVPNAppStoreURL];
     JITLog(@"opening %@", url.absoluteString);
     [UIApplication.sharedApplication openURL:url options:@{} completionHandler:nil];
 }
 
 + (void)applicationDidBecomeActive
 {
+    // Back from LocalDevVPN in the middle of an attempt: carry on with it.
+    if (s_waitingForLocalDevVPN)
+    {
+        JITLog(@"back from LocalDevVPN");
+        ContinueAfterLocalDevVPN();
+        return;
+    }
     if (!s_launchAttemptDone)
     {
         s_launchAttemptDone = YES;

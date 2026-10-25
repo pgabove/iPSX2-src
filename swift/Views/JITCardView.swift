@@ -74,7 +74,9 @@ struct JITCardView: View {
                 .fontWeight(.semibold)
             step(1, "Open the Files app and go to \(deviceFolder) › StikDebug. The file pairingFile.plist is there.")
             step(2, "Come back here, tap Import Pairing File and pick that file.")
-            step(3, "Make sure LocalDevVPN is connected, then tap Turn On JIT.")
+            step(3, jit.autoConnectLocalDevVPN
+                 ? "Tap Turn On JIT. If LocalDevVPN isn't connected, iPSX2 opens it for a moment to connect it and comes right back."
+                 : "Make sure LocalDevVPN is connected, then tap Turn On JIT.")
             HStack(spacing: 10) {
                 Button("Import Pairing File") { showImporter = true }
                     .buttonStyle(.borderedProminent)
@@ -92,7 +94,9 @@ struct JITCardView: View {
         } else {
             Text(jit.problem == .notConnected
                  ? "Connect LocalDevVPN first, then tap Turn On JIT."
-                 : "LocalDevVPN must be connected. Then tap Turn On JIT.")
+                 : jit.autoConnectLocalDevVPN
+                   ? "Tap Turn On JIT. iPSX2 connects LocalDevVPN by itself if it needs to."
+                   : "LocalDevVPN must be connected. Then tap Turn On JIT.")
                 .font(.subheadline)
                 .fontWeight(.semibold)
             HStack(spacing: 10) {
