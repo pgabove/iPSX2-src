@@ -45,21 +45,18 @@ jobs:
       # ──────────────────────────────────────────────────────────────────────────
       # 3. Install build tools
       # ──────────────────────────────────────────────────────────────────────────
+      # cmake and xcbeautify come preinstalled on GitHub's macOS images. Homebrew no
+      # longer ships bottles for macOS 14, so only fall back to it if one is missing
+      # (a full `brew update` + source build took ~20 min and broke ccache setup).
+      # ccache was removed for the same reason: its action could not install ccache.
       - name: Install build tools
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
-          brew update --quiet
-          brew install cmake xcbeautify || true
-
-      # ──────────────────────────────────────────────────────────────────────────
-      # 4. ccache
-      # ──────────────────────────────────────────────────────────────────────────
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-
-          max-size: 2G
+          command -v cmake >/dev/null || brew install cmake || true
+          command -v xcbeautify >/dev/null || brew install xcbeautify || true
+          cmake --version | head -1
+          command -v xcbeautify
 
       # ──────────────────────────────────────────────────────────────────────────
       # 5. CMake configure
@@ -78,8 +75,6 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
             -DiPSX2_REAL_DEVICE=ON \
             -DIPSX2_BUNDLE_ID="$IPSX2_BUNDLE_ID" \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DUSE_DISCORD_SDK=OFF \
             -DUSE_VULKAN=OFF \
             -DSDL_VULKAN=OFF \
@@ -239,12 +234,6 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      # ──────────────────────────────────────────────────────────────────────────
-      # 11. ccache stats
-      # ──────────────────────────────────────────────────────────────────────────
-      - name: ccache stats
-        if: always()
-        run: ccache --show-stats
 
       # ──────────────────────────────────────────────────────────────────────────
       # 12. Upload full logs on failure
