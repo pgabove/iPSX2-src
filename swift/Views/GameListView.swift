@@ -16,6 +16,8 @@ struct GameListView: View {
     @State private var showRestartAlert = false
     @State private var showStopAlert = false
     @State private var pendingGameName: String = ""
+    // Without JIT every CPU core silently falls back to the interpreter, so make it visible.
+    @State private var jitAvailable: Bool = iPSX2Bridge.isJITAvailable()
 
     var sortedGames: [ISOEntry] {
         games.sorted { a, b in
@@ -31,6 +33,11 @@ struct GameListView: View {
                     emptyState
                 } else {
                     List {
+                        if !jitAvailable {
+                            Section {
+                                jitWarning
+                            }
+                        }
                         if let gameName = appState.runningGameName {
                             vmStatusSection(gameName: gameName)
                         }
@@ -77,7 +84,25 @@ struct GameListView: View {
                 Text("VM is currently running.\nShut down and start \(target)?")
             }
         }
-        .onAppear { loadGames() }
+        .onAppear {
+            loadGames()
+            jitAvailable = iPSX2Bridge.isJITAvailable()
+        }
+    }
+
+    private var jitWarning: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("JIT is off", systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundStyle(.red)
+            Text("iPSX2 was opened without JIT, so games run in a very slow backup mode. Menus may work, but fights, 3D scenes and loading screens can stay black.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text("Close iPSX2, then open it from StikDebug with Enable JIT.")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+        }
+        .padding(.vertical, 4)
     }
 
     private func vmStatusSection(gameName: String) -> some View {
@@ -179,6 +204,11 @@ struct GameListView: View {
 
     private var emptyState: some View {
         VStack(spacing: 16) {
+            if !jitAvailable {
+                jitWarning
+                    .padding()
+                    .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+            }
             Image(systemName: "opticaldisc")
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)

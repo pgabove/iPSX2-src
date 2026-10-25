@@ -1321,10 +1321,51 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
         return;
     }
 
-    Console.Warning("@@JIT_GATE@@ JIT NOT available — falling back to Interpreter mode");
-    DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
-    Console.WriteLn("@@JIT_GATE@@ iPSX2_FORCE_EE_INTERP forced to 1");
-    [[VMController sharedInstance] startVMThread];
+    // Without JIT every CPU core (EE, IOP, VU0, VU1) runs on the interpreter. Menus can still
+    // work, but 3D scenes and loading screens crawl, which looks exactly like a game-specific
+    // black-screen hang. Ask the user instead of silently falling back.
+    Console.Warning("@@JIT_GATE@@ JIT NOT available — asking user before falling back to Interpreter mode");
+
+    void (^startWithInterpreter)(void) = ^{
+        DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
+        Console.WriteLn("@@JIT_GATE@@ iPSX2_FORCE_EE_INTERP forced to 1");
+        [[VMController sharedInstance] startVMThread];
+    };
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController* presenter = s_rootVC;
+        while (presenter.presentedViewController && ![presenter.presentedViewController isBeingDismissed])
+            presenter = presenter.presentedViewController;
+
+        if (!presenter || !presenter.view.window) {
+            // Nowhere to show the warning: keep the old behaviour rather than doing nothing.
+            Console.Warning("@@JIT_GATE@@ no view controller for the JIT warning, starting with Interpreter");
+            startWithInterpreter();
+            return;
+        }
+
+        UIAlertController* alert = [UIAlertController
+            alertControllerWithTitle:@"JIT is off"
+                             message:@"iPSX2 was opened without JIT, so games will run in a very slow backup mode. "
+                                     @"Menus may work, but fights, 3D scenes and loading screens can stay black.\n\n"
+                                     @"To fix it: close iPSX2, then open it from StikDebug with Enable JIT."
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                                  style:UIAlertActionStyleCancel
+                                                handler:^(UIAlertAction* action) {
+            (void)action;
+            Console.WriteLn("@@JIT_GATE@@ boot cancelled by user (no JIT)");
+            // Tells the SwiftUI side (AppState) to go back to the game list.
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"iPSX2VMDidShutdown" object:nil];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Start Anyway (Very Slow)"
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction* action) {
+            (void)action;
+            startWithInterpreter();
+        }]];
+        [presenter presentViewController:alert animated:YES completion:nil];
+    });
 #else
     [[VMController sharedInstance] startVMThread];
 #endif

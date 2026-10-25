@@ -73,6 +73,9 @@ typedef NS_ENUM(NSInteger, iPSX2PadButton) {
 // Info
 + (nonnull NSString *)biosName;
 + (nonnull NSString *)buildVersion;
+// YES when a debugger (StikDebug) has enabled JIT for this launch. Without it every
+// CPU core silently falls back to the interpreter, which is far too slow for 3D games.
++ (BOOL)isJITAvailable;
 
 // OSD overlay
 + (void)setPerformanceOverlayVisible:(BOOL)visible;

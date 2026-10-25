@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #import "iPSX2Bridge.h"
+#include <TargetConditionals.h>
 #include <atomic>
 #include <mutex>
+#include <unistd.h>
 #include <SDL3/SDL.h>
+
+// Private but stable code-signing syscall (also declared in DarwinMisc.cpp).
+extern "C" int csops(pid_t pid, unsigned int ops, void* useraddr, size_t usersize);
 
 extern "C" void iPSX2_SetSDLFullscreen(bool enabled);
 extern "C" SDL_Gamepad* iPSX2_GetActiveGamepad();
@@ -135,6 +140,20 @@ static NSDate* s_lastNVMSaveDate = nil;
 + (nonnull NSString *)buildVersion {
     NSString *ver = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"?";
     return [NSString stringWithFormat:@"iPSX2 v%@", ver];
+}
+
++ (BOOL)isJITAvailable {
+#if TARGET_OS_SIMULATOR
+    return YES;
+#else
+    // Same test as DarwinMisc::IsJITAvailable() (CS_DEBUGGED is set once StikDebug has
+    // attached), but without its logging and JIT-mode side effects, so the UI can call
+    // it as often as it likes.
+    uint32_t cs_flags = 0;
+    if (csops(getpid(), 0, &cs_flags, sizeof(cs_flags)) != 0)
+        return NO;
+    return (cs_flags & 0x10000000u) != 0 ? YES : NO;
+#endif
 }
 
 + (nullable NSString *)currentISOPath {

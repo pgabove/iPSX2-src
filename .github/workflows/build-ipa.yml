@@ -18,6 +18,9 @@ jobs:
       ARCHIVE_PATH: ${{ github.workspace }}/build/iPSX2.xcarchive
       IPA_DIR: ${{ github.workspace }}/ipa-staging
       IPA_PATH: ${{ github.workspace }}/iPSX2-unsigned.ipa
+      # Same bundle ID as the iPSX2 build already installed on the iPad, so installing
+      # this IPA with the same signer replaces that app and keeps its Documents folder.
+      IPSX2_BUNDLE_ID: com.thiago.iPSX2
 
     steps:
       # ──────────────────────────────────────────────────────────────────────────
@@ -74,6 +77,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
             -DiPSX2_REAL_DEVICE=ON \
+            -DIPSX2_BUNDLE_ID="$IPSX2_BUNDLE_ID" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DUSE_DISCORD_SDK=OFF \
