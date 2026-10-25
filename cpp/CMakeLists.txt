@@ -26,9 +26,11 @@ set(CMAKE_OSX_ARCHITECTURES "arm64")
 # Version (single source of truth)
 set(IPSX2_VERSION_MAJOR 0)
 set(IPSX2_VERSION_MINOR 1)
-set(IPSX2_VERSION_PATCH 2)
+# Patch version and build number are cache variables so CI can give every build a unique,
+# increasing version; signing services and iOS can refuse an "update" with the same version.
+set(IPSX2_VERSION_PATCH 3 CACHE STRING "iPSX2 patch version")
 set(IPSX2_VERSION "${IPSX2_VERSION_MAJOR}.${IPSX2_VERSION_MINOR}.${IPSX2_VERSION_PATCH}")
-set(IPSX2_BUILD_NUMBER 2)
+set(IPSX2_BUILD_NUMBER 3 CACHE STRING "CFBundleVersion")
 # Bundle identifier. Pass -DIPSX2_BUNDLE_ID=... to match an existing install so the
 # sideloader updates it in place and keeps its Documents folder (BIOS, ISOs, saves).
 set(IPSX2_BUNDLE_ID "com.otti83.iPSX2" CACHE STRING "iOS bundle identifier for the iPSX2 app")

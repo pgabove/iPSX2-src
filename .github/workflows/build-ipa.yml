@@ -75,6 +75,8 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=18.0 \
             -DiPSX2_REAL_DEVICE=ON \
             -DIPSX2_BUNDLE_ID="$IPSX2_BUNDLE_ID" \
+            -DIPSX2_VERSION_PATCH="$((100 + GITHUB_RUN_NUMBER))" \
+            -DIPSX2_BUILD_NUMBER="$((100 + GITHUB_RUN_NUMBER))" \
             -DUSE_DISCORD_SDK=OFF \
             -DUSE_VULKAN=OFF \
             -DSDL_VULKAN=OFF \
