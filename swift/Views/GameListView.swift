@@ -19,6 +19,7 @@ struct GameListView: View {
     // Without JIT every CPU core silently falls back to the interpreter, so make it visible,
     // and offer the built-in JIT helper (or StikDebug) to turn it on.
     @State private var jit = BuiltInJITModel.shared
+    @State private var showPairingImporter = false
 
     private var showJITCard: Bool { !jit.isJITOn || jit.isBusy }
 
@@ -38,7 +39,7 @@ struct GameListView: View {
                     List {
                         if showJITCard {
                             Section {
-                                JITCardView()
+                                JITCardView(showImporter: $showPairingImporter)
                             }
                         }
                         if let gameName = appState.runningGameName {
@@ -94,6 +95,10 @@ struct GameListView: View {
             } message: {
                 let target = pendingGameName.isEmpty ? "BIOS Only" : pendingGameName
                 Text("VM is currently running.\nShut down and start \(target)?")
+            }
+            .fileImporter(isPresented: $showPairingImporter,
+                          allowedContentTypes: BuiltInJITModel.pairingFileTypes) { result in
+                jit.importPairingFile(result)
             }
         }
         .onAppear {
@@ -202,7 +207,7 @@ struct GameListView: View {
     private var emptyState: some View {
         VStack(spacing: 16) {
             if showJITCard {
-                JITCardView()
+                JITCardView(showImporter: $showPairingImporter)
                     .padding()
                     .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
             }

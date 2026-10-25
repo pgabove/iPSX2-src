@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 @Observable
 final class BuiltInJITModel: @unchecked Sendable {
@@ -22,6 +23,15 @@ final class BuiltInJITModel: @unchecked Sendable {
     private(set) var autoConnectLocalDevVPN = true
     /// Turn JIT on automatically when iPSX2 opens (stored by iPSX2BuiltInJIT).
     private(set) var enableAtLaunch = true
+
+    /// Result of the last pairing-file import, shown under the import button.
+    private(set) var pairingImportMessage: String?
+    private(set) var pairingImportFailed = false
+
+    /// What the pairing-file picker accepts: StikDebug's pairingFile.plist is a property list;
+    /// some tools name it .mobiledevicepairing. (Not `.item`: that makes the picker gray files out.)
+    static let pairingFileTypes: [UTType] = [.propertyList, .xml, .data]
+        + ["mobiledevicepairing", "mobiledevicepair"].compactMap { UTType(filenameExtension: $0, conformingTo: .data) }
 
     @ObservationIgnored private var observer: NSObjectProtocol?
 
@@ -83,24 +93,29 @@ final class BuiltInJITModel: @unchecked Sendable {
         iPSX2BuiltInJIT.openLocalDevVPN()
     }
 
-    /// Returns nil on success, otherwise the reason the file was not accepted.
-    func importPairingFile(_ result: Result<URL, Error>) -> String? {
-        defer { refresh() }
+    /// Imports the file picked in the pairing-file picker; the outcome is in pairingImportMessage.
+    func importPairingFile(_ result: Result<URL, Error>) {
         switch result {
         case .success(let url):
             do {
                 try iPSX2BuiltInJIT.importPairingFile(from: url)
-                return nil
+                pairingImportMessage = "Pairing file imported."
+                pairingImportFailed = false
             } catch {
-                return error.localizedDescription
+                pairingImportMessage = error.localizedDescription
+                pairingImportFailed = true
             }
         case .failure(let error):
-            return error.localizedDescription
+            pairingImportMessage = error.localizedDescription
+            pairingImportFailed = true
         }
+        refresh()
     }
 
     func removePairingFile() {
         iPSX2BuiltInJIT.removePairingFile()
+        pairingImportMessage = nil
+        pairingImportFailed = false
         refresh()
     }
 

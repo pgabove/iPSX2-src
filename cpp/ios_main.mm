@@ -1101,6 +1101,49 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
         }
     }
 #endif
+
+    // A file opened in iPSX2 while it wasn't running (for example a pairing file shared from
+    // the Files app) arrives here instead of in scene:openURLContexts:.
+    NSSet<UIOpenURLContext*>* launchURLs = connectionOptions.URLContexts;
+    if (launchURLs.count) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            for (UIOpenURLContext* context in launchURLs)
+                [self handleOpenedURL:context.URL];
+        });
+    }
+}
+
+// Files opened in iPSX2 from outside (Share › iPSX2, "Open in"). Pairing files go to built-in JIT.
+// ipsx2:// (LocalDevVPN sending iPSX2 back) needs nothing here: sceneDidBecomeActive carries on.
+- (void)scene:(UIScene *)scene openURLContexts:(NSSet<UIOpenURLContext *> *)URLContexts {
+    for (UIOpenURLContext* context in URLContexts)
+        [self handleOpenedURL:context.URL];
+}
+
+- (void)handleOpenedURL:(NSURL*)url {
+    if (!url.isFileURL)
+        return;
+    NSString* ext = url.pathExtension.lowercaseString;
+    if (![@[ @"plist", @"mobiledevicepairing", @"mobiledevicepair" ] containsObject:ext])
+        return;
+    NSError* error = nil;
+    const BOOL ok = [iPSX2BuiltInJIT importPairingFileFromURL:url error:&error];
+    Console.WriteLn("@@JIT_BUILTIN@@ file opened in iPSX2: %s (%s)", url.lastPathComponent.UTF8String, ok ? "pairing file imported" : "not a pairing file");
+    NSString* title = ok ? @"Pairing File Imported" : @"Pairing File Not Imported";
+    NSString* message = ok ? @"iPSX2 can now turn on JIT by itself: on the Games screen, tap Turn On JIT."
+                           : (error.localizedDescription ?: @"That file could not be imported.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController* presenter = s_rootVC;
+        while (presenter.presentedViewController && ![presenter.presentedViewController isBeingDismissed])
+            presenter = presenter.presentedViewController;
+        if (!presenter || !presenter.view.window)
+            return;
+        UIAlertController* alert = [UIAlertController alertControllerWithTitle:title
+                                                                       message:message
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [presenter presentViewController:alert animated:YES completion:nil];
+    });
 }
 
 - (void)checkAndConfigureBIOS {

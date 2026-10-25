@@ -7,7 +7,6 @@ import UniformTypeIdentifiers
 struct JITSettingsView: View {
     @State private var jit = BuiltInJITModel.shared
     @State private var showImporter = false
-    @State private var importMessage: String?
     @State private var confirmRemove = false
 
     private var deviceFolder: String {
@@ -64,10 +63,10 @@ struct JITSettingsView: View {
                 if jit.hasPairingFile {
                     Button("Remove Pairing File", role: .destructive) { confirmRemove = true }
                 }
-                if let importMessage {
-                    Text(importMessage)
+                if let message = jit.pairingImportMessage {
+                    Text(message)
                         .font(.footnote)
-                        .foregroundStyle(importMessage == "Pairing file imported." ? .green : .red)
+                        .foregroundStyle(jit.pairingImportFailed ? Color.red : Color.green)
                 }
             } header: {
                 Text("Pairing File")
@@ -109,14 +108,13 @@ struct JITSettingsView: View {
         .navigationTitle("JIT")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { jit.refresh() }
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.item]) { result in
-            importMessage = jit.importPairingFile(result) ?? "Pairing file imported."
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: BuiltInJITModel.pairingFileTypes) { result in
+            jit.importPairingFile(result)
         }
         .alert("Remove the pairing file?", isPresented: $confirmRemove) {
             Button("Cancel", role: .cancel) {}
             Button("Remove", role: .destructive) {
                 jit.removePairingFile()
-                importMessage = nil
             }
         } message: {
             Text("Built-in JIT stops working until you import it again. StikDebug keeps its own copy.")

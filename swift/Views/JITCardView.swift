@@ -2,13 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 import SwiftUI
-import UniformTypeIdentifiers
 
-/// Shown on the Games screen while JIT is off or turning on.
+/// Shown on the Games screen while JIT is off or turning on. The pairing-file picker itself is
+/// attached in GameListView, outside the List, and opened through `showImporter`.
 struct JITCardView: View {
     @State private var jit = BuiltInJITModel.shared
-    @State private var showImporter = false
-    @State private var importError: String?
+    @Binding var showImporter: Bool
 
     private var deviceFolder: String {
         UIDevice.current.userInterfaceIdiom == .pad ? "On My iPad" : "On My iPhone"
@@ -33,9 +32,6 @@ struct JITCardView: View {
             }
         }
         .padding(.vertical, 4)
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.item]) { result in
-            importError = jit.importPairingFile(result)
-        }
     }
 
     private var busyView: some View {
@@ -72,8 +68,8 @@ struct JITCardView: View {
             Text("Turn on JIT inside iPSX2 (one-time setup):")
                 .font(.subheadline)
                 .fontWeight(.semibold)
-            step(1, "Open the Files app and go to \(deviceFolder) › StikDebug. The file pairingFile.plist is there.")
-            step(2, "Come back here, tap Import Pairing File and pick that file.")
+            step(1, "Tap Import Pairing File, then Browse › \(deviceFolder) › StikDebug › pairingFile.plist.")
+            step(2, "Or, in the Files app, copy pairingFile.plist from \(deviceFolder) › StikDebug into the iPSX2 folder. iPSX2 picks it up by itself when you come back.")
             step(3, jit.autoConnectLocalDevVPN
                  ? "Tap Turn On JIT. If LocalDevVPN isn't connected, iPSX2 opens it for a moment to connect it and comes right back."
                  : "Make sure LocalDevVPN is connected, then tap Turn On JIT.")
@@ -83,8 +79,8 @@ struct JITCardView: View {
                 Button(jit.localDevVPNTitle) { jit.openLocalDevVPN() }
                     .buttonStyle(.bordered)
             }
-            if let importError {
-                Text(importError)
+            if jit.pairingImportFailed, let message = jit.pairingImportMessage {
+                Text(message)
                     .font(.footnote)
                     .foregroundStyle(.red)
             }
