@@ -74202,6 +74202,8 @@ SLUS-21978:
   region: "NTSC-U"
   gsHWFixes:
     halfPixelOffset: 5 # Aligns post effects (same as Budokai Tenkaichi 3).
+    cpuCLUTRender: 1 # Character, portrait and HUD palettes are drawn by the GS; without this the characters are invisible on Metal.
+    mergeSprite: 1 # Same as the BT4 mod PC settings.
     beforeDraw: "OI_DBZBTGames" # Same fix as Budokai Tenkaichi 3: draws the small 16x16/64x64 effect passes on the CPU instead of reading the GPU framebuffer back.
 SLUS-27014:
   name: "WWE SmackDown! vs Raw - Superstar Series [Bundle]"
