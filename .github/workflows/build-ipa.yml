@@ -211,8 +211,17 @@ jobs:
           fi
 
           cd "$IPA_DIR"
-          zip -qyr "$IPA_PATH" Payload SwiftSupport
+          # -9: maximum compression keeps the IPA as small as possible (some signing
+          # services refuse uploads that are bigger than an earlier one); -X drops extra
+          # file attributes that only add size.
+          zip -qyr -9 -X "$IPA_PATH" Payload SwiftSupport
           echo "✅ IPA assembled: $(du -sh "$IPA_PATH" | cut -f1)"
+          # Surface the exact size and the biggest files as annotations (readable via the API).
+          echo "::notice title=IPA size::$(stat -f%z "$IPA_PATH") bytes"
+          # (|| true: with pipefail, head closing the pipe early must not fail the step)
+          find Payload -type f -exec stat -f '%z %N' {} + | sort -rn | head -8 | while read -r sz name; do
+            echo "::notice title=Largest files::$sz $name"
+          done || true
 
       # ──────────────────────────────────────────────────────────────────────────
       # 9. Verify IPA structure
