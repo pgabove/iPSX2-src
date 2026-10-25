@@ -19,6 +19,11 @@ struct SettingsRootView: View {
 
             Section {
                 NavigationLink {
+                    JITSettingsView()
+                } label: {
+                    Label("JIT", systemImage: "bolt.fill")
+                }
+                NavigationLink {
                     EmulatorSettingsView()
                 } label: {
                     Label("Emulator", systemImage: "cpu")

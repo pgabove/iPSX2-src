@@ -59,6 +59,7 @@ struct rc_client_t;
 #import <UIKit/UIKit.h>
 #include <mach-o/dyld.h>
 #include "common/Darwin/DarwinMisc.h" // For iPSX2_CRASH_DIAG
+#import "iPSX2BuiltInJIT.h"
 
 // pcsx2/Memory.cpp: allocate + TXM-register the JIT code region early (1 ready, 0 n/a, -1 no script).
 namespace SysMemory { int ReserveCodeMemoryForJIT(); }
@@ -110,6 +111,29 @@ std::mutex g_settingsMutex;
 
 extern "C" bool VMController_IsStopRequested() {
     return s_requestVMStop.load();
+}
+
+// Built-in JIT (iPSX2BuiltInJIT.mm): the VM thread sets up its memory once per launch, so JIT
+// can only be turned on before the first game (or BIOS) starts.
+extern "C" bool iPSX2_VMThreadWasCreated(void) {
+    return s_vmThreadCreated.load();
+}
+
+// Built-in JIT: called once the helper has attached. Does the same JIT memory setup (and on
+// iOS 26+ the brk #0x69 handshake legacy.js answers) as a StikDebug launch does at startup.
+// 1 = handshake done, 0 = JIT works without one (no TXM), -1 = the handshake was not
+// answered, -2 = too late: a game already started without JIT in this launch.
+extern "C" int iPSX2_ActivateBuiltInJIT(void) {
+    if (s_vmThreadCreated.load()) {
+        // Only fine if this launch's JIT memory was already set up with the handshake.
+        return DarwinMisc::GetTXMRegistrationState() == 1 ? 1 : -2;
+    }
+    const int reserved = SysMemory::ReserveCodeMemoryForJIT();
+    const int txm = DarwinMisc::GetTXMRegistrationState();
+    Console.WriteLn("@@JIT_BUILTIN@@ code memory reserve result=%d txm_state=%d", reserved, txm);
+    if (reserved < 0 || txm < 0)
+        return -1;
+    return txm == 1 ? 1 : 0;
 }
 
 @interface VMController : NSObject
@@ -1318,6 +1342,16 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
 // CS_DEBUGGED check only (DolphiniOS approach) — no blocking, runs on main thread
 - (void)checkJITAndStartVM {
 #if !TARGET_OS_SIMULATOR
+    // Built-in JIT is turning on (at launch, or from the Games screen): wait for it first, so
+    // the VM never starts in the middle of the helper's handshake.
+    if ([iPSX2BuiltInJIT isBusy]) {
+        Console.WriteLn("@@JIT_GATE@@ built-in JIT is turning on — waiting before starting the VM");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self turnOnBuiltInJITThenStartVM];
+        });
+        return;
+    }
+
     bool scriptMissing = false;
     if (DarwinMisc::IsJITAvailable()) {
         // iOS 26+ (TXM): the JIT region must be registered through StikDebug's script. That
@@ -1333,9 +1367,50 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
         scriptMissing = true;
     }
 
-    // Without JIT every CPU core (EE, IOP, VU0, VU1) runs on the interpreter. Menus can still
-    // work, but 3D scenes and loading screens crawl, which looks exactly like a game-specific
-    // black-screen hang. Ask the user instead of silently falling back.
+    [self presentJITOffAlert:scriptMissing note:nil];
+#else
+    [[VMController sharedInstance] startVMThread];
+#endif
+}
+
+#if !TARGET_OS_SIMULATOR
+// The view controller alerts are shown from (the top of the presented stack).
+- (UIViewController*)jitAlertPresenter {
+    UIViewController* presenter = s_rootVC;
+    while (presenter.presentedViewController && ![presenter.presentedViewController isBeingDismissed])
+        presenter = presenter.presentedViewController;
+    return (presenter && presenter.view.window) ? presenter : nil;
+}
+
+// Built-in JIT: turn it on (showing progress), then start the VM, or explain what went wrong.
+- (void)turnOnBuiltInJITThenStartVM {
+    UIViewController* presenter = [self jitAlertPresenter];
+    if (!presenter) {
+        Console.Warning("@@JIT_GATE@@ no view controller for the JIT progress, asking without it");
+        [self presentJITOffAlert:(DarwinMisc::IsJITAvailable() && DarwinMisc::GetTXMRegistrationState() < 0) note:nil];
+        return;
+    }
+    [iPSX2BuiltInJIT enableWithProgressFrom:presenter completion:^(BOOL jitOn, BOOL cancelled) {
+        if (jitOn) {
+            Console.WriteLn("@@JIT_GATE@@ built-in JIT is on — starting the VM");
+            [self checkJITAndStartVM];
+            return;
+        }
+        if (cancelled) {
+            Console.WriteLn("@@JIT_GATE@@ boot cancelled while built-in JIT was turning on");
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"iPSX2VMDidShutdown" object:nil];
+            return;
+        }
+        // A failed attempt can leave a debugger mark without the iOS 26 handshake (script missing).
+        const bool scriptMissing = DarwinMisc::IsJITAvailable() && DarwinMisc::GetTXMRegistrationState() < 0;
+        [self presentJITOffAlert:scriptMissing note:[iPSX2BuiltInJIT errorText]];
+    }];
+}
+
+// Without JIT every CPU core (EE, IOP, VU0, VU1) runs on the interpreter. Menus can still
+// work, but 3D scenes and loading screens crawl, which looks exactly like a game-specific
+// black-screen hang. Ask the user instead of silently falling back.
+- (void)presentJITOffAlert:(bool)scriptMissing note:(NSString*)note {
     if (scriptMissing)
         Console.Warning("@@JIT_GATE@@ debugger attached but no script answered brk #0x69 — asking user before falling back to Interpreter mode");
     else
@@ -1351,22 +1426,36 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
         [[VMController sharedInstance] startVMThread];
     };
 
+    // Built-in JIT (no StikDebug needed) when this installation has the helper.
+    const BOOL builtInUsable = [iPSX2BuiltInJIT unavailableReason] == nil;
+    const BOOL tooLate = s_vmThreadCreated.load();
+    const BOOL canTurnOn = builtInUsable && !tooLate && [iPSX2BuiltInJIT hasPairingFile];
+
     NSString* alertTitle = scriptMissing ? @"JIT script missing" : @"JIT is off";
-    NSString* alertMessage = scriptMissing
-        ? @"StikDebug is attached, but no script answered iPSX2's JIT request (iOS and iPadOS 26 and later need one), "
-          @"so JIT can't be used and games would run in a very slow backup mode.\n\n"
-          @"To fix it: in StikDebug, press and hold iPSX2, tap Assign Script and choose legacy.js. "
-          @"Then close iPSX2 and open it from StikDebug again."
-        : @"iPSX2 was opened without JIT, so games will run in a very slow backup mode. "
-          @"Menus may work, but fights, 3D scenes and loading screens can stay black.\n\n"
-          @"To fix it: close iPSX2, then open it from StikDebug (with the legacy.js script assigned to iPSX2).";
+    NSString* problem = scriptMissing
+        ? @"A debugger is attached, but no script answered iPSX2's JIT request (iOS and iPadOS 26 and later need one), "
+          @"so JIT can't be used and games would run in a very slow backup mode."
+        : @"iPSX2 is running without JIT, so games will run in a very slow backup mode. "
+          @"Menus may work, but fights, 3D scenes and loading screens can stay black.";
+    NSString* fix;
+    if (canTurnOn)
+        fix = @"Tap Turn On JIT and iPSX2 turns it on by itself (LocalDevVPN must be connected).";
+    else if (builtInUsable && tooLate)
+        fix = @"A game already ran without JIT since iPSX2 was opened. Close iPSX2 completely (swipe it away), "
+              @"open it again, and turn on JIT before starting a game.";
+    else if (builtInUsable)
+        fix = @"To turn on JIT without StikDebug, import your pairing file once: Settings › JIT. "
+              @"Or close iPSX2 and open it from StikDebug with the legacy.js script assigned to iPSX2.";
+    else if (scriptMissing)
+        fix = @"To fix it: in StikDebug, press and hold iPSX2, tap Assign Script and choose legacy.js. "
+              @"Then close iPSX2 and open it from StikDebug again.";
+    else
+        fix = @"To fix it: close iPSX2, then open it from StikDebug (with the legacy.js script assigned to iPSX2).";
+    NSString* alertMessage = [NSString stringWithFormat:@"%@%@%@\n\n%@", note ?: @"", note.length ? @"\n\n" : @"", problem, fix];
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController* presenter = s_rootVC;
-        while (presenter.presentedViewController && ![presenter.presentedViewController isBeingDismissed])
-            presenter = presenter.presentedViewController;
-
-        if (!presenter || !presenter.view.window) {
+        UIViewController* presenter = [self jitAlertPresenter];
+        if (!presenter) {
             // Nowhere to show the warning: keep the old behaviour rather than doing nothing.
             Console.Warning("@@JIT_GATE@@ no view controller for the JIT warning, starting with Interpreter");
             startWithInterpreter();
@@ -1376,6 +1465,23 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
         UIAlertController* alert = [UIAlertController alertControllerWithTitle:alertTitle
                                                                        message:alertMessage
                                                                 preferredStyle:UIAlertControllerStyleAlert];
+        if (canTurnOn) {
+            UIAlertAction* turnOn = [UIAlertAction actionWithTitle:@"Turn On JIT"
+                                                             style:UIAlertActionStyleDefault
+                                                           handler:^(UIAlertAction* action) {
+                (void)action;
+                Console.WriteLn("@@JIT_GATE@@ user chose Turn On JIT (built-in)");
+                [self turnOnBuiltInJITThenStartVM];
+            }];
+            [alert addAction:turnOn];
+            alert.preferredAction = turnOn;
+        }
+        [alert addAction:[UIAlertAction actionWithTitle:@"Start Anyway (Very Slow)"
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction* action) {
+            (void)action;
+            startWithInterpreter();
+        }]];
         [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
                                                   style:UIAlertActionStyleCancel
                                                 handler:^(UIAlertAction* action) {
@@ -1384,18 +1490,10 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
             // Tells the SwiftUI side (AppState) to go back to the game list.
             [[NSNotificationCenter defaultCenter] postNotificationName:@"iPSX2VMDidShutdown" object:nil];
         }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Start Anyway (Very Slow)"
-                                                  style:UIAlertActionStyleDestructive
-                                                handler:^(UIAlertAction* action) {
-            (void)action;
-            startWithInterpreter();
-        }]];
         [presenter presentViewController:alert animated:YES completion:nil];
     });
-#else
-    [[VMController sharedInstance] startVMThread];
-#endif
 }
+#endif
 
 
 
@@ -1405,6 +1503,8 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
 }
 
 - (void)sceneDidBecomeActive:(UIScene *)scene {
+    // Built-in JIT: turn JIT on when iPSX2 opens, and retry when LocalDevVPN sends us back.
+    [iPSX2BuiltInJIT applicationDidBecomeActive];
 }
 
 - (void)sceneWillResignActive:(UIScene *)scene {

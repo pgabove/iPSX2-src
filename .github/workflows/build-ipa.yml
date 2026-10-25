@@ -10,7 +10,8 @@ on:
 jobs:
   build-ipa:
     name: Build Unsigned iPSX2.ipa
-    runs-on: macos-14        # Apple Silicon runner — fastest for arm64 iOS
+    # macOS 14 runners stop on 2026-11-02; macOS 15 still has the same Xcode 16.2.
+    runs-on: macos-15        # Apple Silicon runner — fastest for arm64 iOS
 
     env:
       SCHEME: iPSX2
@@ -34,13 +35,24 @@ jobs:
       # ──────────────────────────────────────────────────────────────────────────
       # 2. Select Xcode
       # ──────────────────────────────────────────────────────────────────────────
-      - name: Select latest Xcode
+      # Xcode 16.2 is what every earlier build used; newer Xcodes change compiler behaviour.
+      - name: Select Xcode 16.2
         run: |
-          XCODE=$(ls /Applications | grep '^Xcode' | sort -V | tail -1)
+          if [ -d /Applications/Xcode_16.2.app ]; then
+            XCODE=Xcode_16.2.app
+          else
+            XCODE=$(ls /Applications | grep '^Xcode_16' | sort -V | tail -1)
+          fi
           echo "Using $XCODE"
           sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
           xcodebuild -version
           swift --version
+
+      # ──────────────────────────────────────────────────────────────────────────
+      # 2b. StikJIT sources for the built-in JIT helper (PlugIns/iPSX2JITHelper.appex)
+      # ──────────────────────────────────────────────────────────────────────────
+      - name: Fetch StikJIT 1.9.0
+        run: sh scripts/fetch_stikjit.sh
 
       # ──────────────────────────────────────────────────────────────────────────
       # 3. Install build tools
@@ -147,7 +159,27 @@ jobs:
 
           # List available schemes
           echo "=== Available schemes ==="
-          xcodebuild -project "$XCODEPROJ" -list 2>&1 || true
+          xcodebuild -project "$XCODEPROJ" -list 2>&1 | tee /tmp/xcode_list.txt || true
+          grep -q "iPSX2JITHelper" /tmp/xcode_list.txt \
+            || { echo "::error title=JIT helper::CMake did not create the iPSX2JITHelper target"; exit 1; }
+
+      # ──────────────────────────────────────────────────────────────────────────
+      # 6b. Build the JIT helper on its own first: it compiles in a few minutes, so a
+      #     mistake in it fails the job early instead of after the whole emulator.
+      # ──────────────────────────────────────────────────────────────────────────
+      - name: Build JIT helper (quick check)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project "$XCODEPROJ" \
+            -target iPSX2JITHelper \
+            -configuration Release \
+            -sdk iphoneos \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | xcbeautify
 
       # ──────────────────────────────────────────────────────────────────────────
       # 7. Build & Archive (unsigned)
@@ -209,6 +241,15 @@ jobs:
                 echo "  SwiftSupport ← $libname"
             done
           fi
+
+          # The built-in JIT helper must be inside the app, with legacy.js next to it.
+          HELPER="$IPA_DIR/Payload/$APP_NAME/PlugIns/iPSX2JITHelper.appex"
+          if [ ! -f "$HELPER/iPSX2JITHelper" ] || [ ! -f "$HELPER/legacy.js" ]; then
+            echo "::error title=JIT helper::PlugIns/iPSX2JITHelper.appex is missing from the app"
+            ls -la "$IPA_DIR/Payload/$APP_NAME" "$IPA_DIR/Payload/$APP_NAME/PlugIns" 2>&1 || true
+            exit 1
+          fi
+          echo "::notice title=JIT helper::$(stat -f%z "$HELPER/iPSX2JITHelper") bytes, $(plutil -extract CFBundleIdentifier raw "$HELPER/Info.plist")"
 
           cd "$IPA_DIR"
           # -9: maximum compression keeps the IPA as small as possible (some signing

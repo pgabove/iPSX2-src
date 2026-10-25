@@ -16,9 +16,11 @@ struct GameListView: View {
     @State private var showRestartAlert = false
     @State private var showStopAlert = false
     @State private var pendingGameName: String = ""
-    // Without JIT every CPU core silently falls back to the interpreter, so make it visible.
-    // 0 = ready, 1 = not opened from StikDebug, 2 = StikDebug attached but no JIT script.
-    @State private var jitStatus: Int = iPSX2Bridge.jitStatus()
+    // Without JIT every CPU core silently falls back to the interpreter, so make it visible,
+    // and offer the built-in JIT helper (or StikDebug) to turn it on.
+    @State private var jit = BuiltInJITModel.shared
+
+    private var showJITCard: Bool { !jit.isJITOn || jit.isBusy }
 
     var sortedGames: [ISOEntry] {
         games.sorted { a, b in
@@ -34,9 +36,9 @@ struct GameListView: View {
                     emptyState
                 } else {
                     List {
-                        if jitStatus != 0 {
+                        if showJITCard {
                             Section {
-                                jitWarning
+                                JITCardView()
                             }
                         }
                         if let gameName = appState.runningGameName {
@@ -53,6 +55,15 @@ struct GameListView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { loadGames() } label: {
                         Image(systemName: "arrow.clockwise")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if jit.isJITOn && !jit.isBusy {
+                        Label("JIT On", systemImage: "bolt.fill")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.green)
                     }
                 }
                 ToolbarItem(placement: .topBarLeading) {
@@ -87,27 +98,8 @@ struct GameListView: View {
         }
         .onAppear {
             loadGames()
-            jitStatus = iPSX2Bridge.jitStatus()
+            jit.refresh()
         }
-    }
-
-    private var jitWarning: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(jitStatus == 2 ? "JIT script missing" : "JIT is off", systemImage: "exclamationmark.triangle.fill")
-                .font(.headline)
-                .foregroundStyle(.red)
-            Text(jitStatus == 2
-                 ? "StikDebug is attached, but no script answered iPSX2's JIT request, so games would run in a very slow backup mode."
-                 : "iPSX2 was opened without JIT, so games run in a very slow backup mode. Menus may work, but fights, 3D scenes and loading screens can stay black.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Text(jitStatus == 2
-                 ? "In StikDebug, press and hold iPSX2, tap Assign Script and choose legacy.js. Then close iPSX2 and open it from StikDebug again."
-                 : "Close iPSX2, then open it from StikDebug (with the legacy.js script assigned to iPSX2).")
-                .font(.subheadline)
-                .fontWeight(.semibold)
-        }
-        .padding(.vertical, 4)
     }
 
     private func vmStatusSection(gameName: String) -> some View {
@@ -209,8 +201,8 @@ struct GameListView: View {
 
     private var emptyState: some View {
         VStack(spacing: 16) {
-            if jitStatus != 0 {
-                jitWarning
+            if showJITCard {
+                JITCardView()
                     .padding()
                     .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
             }

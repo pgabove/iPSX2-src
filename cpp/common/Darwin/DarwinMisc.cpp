@@ -22,6 +22,7 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/sysctl.h>
+#include <sys/proc.h> // P_TRACED (IsDebuggerAttached)
 #include <mach-o/dyld.h>
 #include <time.h>
 #include <pthread.h> // Added for pthread_jit_write_protect_np
@@ -639,6 +640,9 @@ static void* s_reserved_code_rx = nullptr;
 static size_t s_reserved_code_size = 0;
 // 0 = not attempted, 1 = TXM registration done, -1 = brk #0x69 not answered (no script)
 static int s_txm_registration_state = 0;
+// IsJITAvailable() picks the no-JIT (Legacy) mode while no debugger is attached. The built-in
+// JIT helper attaches later in the same launch, so remember to detect the real mode again then.
+static bool s_jit_mode_set_without_debugger = false;
 
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 static bool HasTXM()
@@ -924,7 +928,60 @@ void DarwinMisc::ForceLegacyJitMode()
     // the brk #0x69 handshake (plain RW mapping, same as launching without a debugger).
     s_jit_mode = JitMode::Legacy;
     s_jit_mode_detected = true;
+    s_jit_mode_set_without_debugger = false;
     fprintf(stderr, "@@JIT_MODE@@ forced to Legacy for interpreter fallback\n");
+}
+
+bool DarwinMisc::IsDebuggerAttached()
+{
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    // P_TRACED is set only while a debugger is attached (CS_DEBUGGED stays set afterwards).
+    struct kinfo_proc info = {};
+    size_t size = sizeof(info);
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+    if (sysctl(mib, 4, &info, &size, nullptr, 0) != 0 || size == 0)
+        return false;
+    return (info.kp_proc.p_flag & P_TRACED) != 0;
+#else
+    return false;
+#endif
+}
+
+void DarwinMisc::ReleaseWaitingJITScript()
+{
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+    // StikJIT's legacy.js stays attached until it has answered one brk #0x69. When JIT turned
+    // out not to need that handshake (no TXM: MAP_JIT works), answer it with a scratch page so
+    // the script detaches; an attached script would swallow the signals fastmem relies on.
+    // Without a debugger the brk raises SIGTRAP, which is caught below.
+    const size_t size = 16384;
+    void* page = mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (page == MAP_FAILED)
+        return;
+
+    static sigjmp_buf s_release_brk_jmp;
+    struct sigaction sa_brk = {}, sa_brk_old = {};
+    sa_brk.sa_handler = +[](int) { siglongjmp(s_release_brk_jmp, 1); };
+    sa_brk.sa_flags = 0;
+    sigemptyset(&sa_brk.sa_mask);
+    sigaction(SIGTRAP, &sa_brk, &sa_brk_old);
+    if (sigsetjmp(s_release_brk_jmp, 1) == 0)
+    {
+        asm volatile("mov x0, %0\n"
+                     "mov x1, %1\n"
+                     "brk #0x69\n"
+                     :
+                     : "r"(page), "r"(size)
+                     : "x0", "x1");
+        fprintf(stderr, "@@JIT_ALLOC@@ released the waiting JIT script with a scratch brk #0x69\n");
+    }
+    else
+    {
+        fprintf(stderr, "@@JIT_ALLOC@@ scratch brk #0x69: no script was attached\n");
+    }
+    sigaction(SIGTRAP, &sa_brk_old, NULL);
+    munmap(page, size);
+#endif
 }
 
 // [P45-2] JIT availability — CS_DEBUGGED only (DolphiniOS approach)
@@ -951,7 +1008,14 @@ bool DarwinMisc::IsJITAvailable()
         fprintf(stderr, "@@JIT_DETECT@@ result=UNAVAILABLE (no CS_DEBUGGED — launch via StikDebug)\n");
         s_jit_mode = JitMode::Legacy;
         s_jit_mode_detected = true;
+        s_jit_mode_set_without_debugger = true;
         return false;
+    }
+
+    if (s_jit_mode_set_without_debugger) {
+        // A debugger (the built-in JIT helper) attached after an earlier check found none.
+        s_jit_mode_set_without_debugger = false;
+        DetectJitMode();
     }
 
     fprintf(stderr, "@@JIT_DETECT@@ result=AVAILABLE (CS_DEBUGGED set)\n");

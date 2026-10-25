@@ -33,6 +33,8 @@ xcodebuild -project build-sim/iPSX2.xcodeproj \
 
 Real-device IPAs are re-signed with Sideloadly before sideloading — code signing is intentionally disabled in CMake (`CODE_SIGNING_REQUIRED=NO`).
 
+**Built-in JIT helper:** run `scripts/fetch_stikjit.sh` before generating a real-device project. It downloads StikJIT 1.9.0 (MPL-2.0) into `cpp/3rdparty/StikJIT` (git-ignored); CMake then builds the `iPSX2JITHelper` app extension from its sources and embeds it as `iPSX2.app/PlugIns/iPSX2JITHelper.appex`. Without that folder the helper is skipped and iPSX2 works only with StikDebug.
+
 No in-tree builds: CMake will error if `build/` is inside the source tree.
 
 ## Architecture
@@ -78,6 +80,8 @@ iPSX2-src-main/
 **Renderer:** Metal only. Shaders live in `cpp/pcsx2/GS/Renderers/Metal/*.metal` and are compiled into `default.metallib` by Xcode. The Metal layer is surfaced to SwiftUI via `MetalGameView` (UIViewRepresentable wrapping the view from `iPSX2Bridge.gameRenderView()`).
 
 **JIT entitlement:** `Entitlements.plist` includes `com.apple.security.cs.allow-jit` — required for the emulator's JIT recompiler. Re-signing must preserve this.
+
+**Built-in JIT:** `cpp/iPSX2BuiltInJIT.mm` (ARC) starts the helper extension (`swift/JITHelper/iPSX2JITHelper.swift`, Swift 5 mode, StikJIT sources compiled in) through the private NSExtension API and sends it iPSX2's PID and `Documents/StikJIT/pairingFile.plist`. The helper attaches over LocalDevVPN and runs legacy.js; iPSX2 notices the attach and calls `iPSX2_ActivateBuiltInJIT()` (ios_main.mm), which does the same brk #0x69 code-memory handshake as a StikDebug launch. This only works before the first VM thread starts in a launch.
 
 **Swift version:** Swift 6.0, strict concurrency. Shared singletons (`AppState.shared`, `EmulatorBridge.shared`) are marked `@unchecked Sendable` to cross the actor boundary since they call ObjC synchronously.
 

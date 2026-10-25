@@ -3,3 +3,4 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #import "iPSX2Bridge.h"
+#import "iPSX2BuiltInJIT.h"

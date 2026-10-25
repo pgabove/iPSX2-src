@@ -72,6 +72,24 @@
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>
     <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>iPSX2</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>ipsx2</string>
+            </array>
+        </dict>
+    </array>
+    <key>LSApplicationQueriesSchemes</key>
+    <array>
+        <string>localdevvpn</string>
+        <string>stikdebug</string>
+    </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>iPSX2 connects to this device through LocalDevVPN to turn on JIT, so games run at full speed.</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

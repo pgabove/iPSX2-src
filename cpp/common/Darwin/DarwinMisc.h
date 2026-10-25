@@ -127,6 +127,12 @@ struct CPUClass {
     int GetTXMRegistrationState();
     // Use the plain (non-TXM) allocation path so the interpreter fallback can still start.
     void ForceLegacyJitMode();
+    // True while a debugger is attached right now (P_TRACED). CS_DEBUGGED stays set after
+    // a debugger detaches, so this is how the built-in JIT helper's attach is noticed.
+    bool IsDebuggerAttached();
+    // Give a JIT script that is still waiting for brk #0x69 a harmless one so it detaches
+    // (used when JIT turned out not to need the TXM handshake). Safe without a debugger.
+    void ReleaseWaitingJITScript();
 
     // [P49] Legacy lazy toggle: flip RW→RX + icache flush before JIT dispatch.
     // Call this once before entering JIT code (e.g., in recExecute dispatcher).

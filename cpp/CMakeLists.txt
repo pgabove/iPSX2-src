@@ -185,12 +185,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         ${CMAKE_SOURCE_DIR}/../swift/Models/AppState.swift
         ${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore.swift
         ${CMAKE_SOURCE_DIR}/../swift/Models/FileImportHandler.swift
+        ${CMAKE_SOURCE_DIR}/../swift/Models/BuiltInJITModel.swift
+        ${CMAKE_SOURCE_DIR}/../swift/Views/JITCardView.swift
+        ${CMAKE_SOURCE_DIR}/../swift/Views/Settings/JITSettingsView.swift
     )
 
     # Generate Info.plist with version from CMake
     configure_file("${CMAKE_SOURCE_DIR}/Info.plist.in" "${CMAKE_BINARY_DIR}/Info.plist" @ONLY)
 
-    add_executable(iPSX2 ios_main.mm iPSX2Bridge.mm ${SWIFT_SOURCES})
+    add_executable(iPSX2 ios_main.mm iPSX2Bridge.mm iPSX2BuiltInJIT.mm ${SWIFT_SOURCES})
+    # The built-in JIT coordinator is written for ARC (the other .mm files are not).
+    set_source_files_properties(iPSX2BuiltInJIT.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     set_target_properties(iPSX2 PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_GUI_IDENTIFIER "${IPSX2_BUNDLE_ID}"
@@ -339,4 +344,87 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         MACOSX_BUNDLE_EXECUTABLE_NAME "iPSX2"
         OUTPUT_NAME "iPSX2"
     )
+
+    # Licenses of the code the built-in JIT helper bundles (shown by Settings › Licenses).
+    set(LICENSE_RESOURCES
+        "${CMAKE_SOURCE_DIR}/../assets/licenses/LICENSE-StikJIT-MPL-2.0.txt"
+        "${CMAKE_SOURCE_DIR}/../assets/licenses/LICENSE-idevice-MIT.txt"
+    )
+    target_sources(iPSX2 PRIVATE ${LICENSE_RESOURCES})
+    set_source_files_properties(${LICENSE_RESOURCES} PROPERTIES MACOSX_PACKAGE_LOCATION Resources/licenses)
+
+    # ── Built-in JIT helper (PlugIns/iPSX2JITHelper.appex) ─────────────────────────────────
+    # A process can't attach a debugger to itself, so iPSX2 starts this app extension, which
+    # enables JIT for iPSX2 over LocalDevVPN like StikDebug does (cpp/iPSX2BuiltInJIT.mm).
+    # It is compiled from StikJIT's MPL-2.0 sources (Swift + the prebuilt idevice library);
+    # scripts/fetch_stikjit.sh downloads them into 3rdparty/StikJIT.
+    option(IPSX2_BUILTIN_JIT "Embed the built-in JIT helper (needs scripts/fetch_stikjit.sh)" ON)
+    set(IPSX2_STIKJIT_DIR "${CMAKE_SOURCE_DIR}/3rdparty/StikJIT" CACHE PATH "StikJIT 1.9.0 source folder")
+    if(IPSX2_BUILTIN_JIT AND iPSX2_REAL_DEVICE
+       AND EXISTS "${IPSX2_STIKJIT_DIR}/Sources/StikJIT.swift"
+       AND EXISTS "${IPSX2_STIKJIT_DIR}/idevice/libidevice_ffi.a")
+        message(STATUS "Built-in JIT helper: using StikJIT from ${IPSX2_STIKJIT_DIR}")
+        file(GLOB STIKJIT_SWIFT_SOURCES "${IPSX2_STIKJIT_DIR}/Sources/*.swift")
+        set(JIT_HELPER_SOURCES
+            "${CMAKE_SOURCE_DIR}/../swift/JITHelper/iPSX2JITHelper.swift"
+            ${STIKJIT_SWIFT_SOURCES}
+        )
+        # StikJIT loads these from the bundle its code lives in: the helper.
+        set(JIT_HELPER_RESOURCES
+            "${IPSX2_STIKJIT_DIR}/Resources/legacy.js"
+            "${IPSX2_STIKJIT_DIR}/Resources/universal.js"
+        )
+        configure_file("${CMAKE_SOURCE_DIR}/JITHelper/Info.plist.in" "${CMAKE_BINARY_DIR}/JITHelper-Info.plist" @ONLY)
+
+        add_executable(iPSX2JITHelper MACOSX_BUNDLE ${JIT_HELPER_SOURCES} ${JIT_HELPER_RESOURCES})
+        set_source_files_properties(${JIT_HELPER_RESOURCES} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+        set_target_properties(iPSX2JITHelper PROPERTIES
+            BUNDLE_EXTENSION "appex"
+            XCODE_PRODUCT_TYPE "com.apple.product-type.app-extension"
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_BINARY_DIR}/JITHelper-Info.plist"
+            OUTPUT_NAME "iPSX2JITHelper"
+            XCODE_ATTRIBUTE_PRODUCT_NAME "iPSX2JITHelper"
+            XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${IPSX2_BUNDLE_ID}.JITHelper"
+            XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+            XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.0"
+            XCODE_ATTRIBUTE_SDKROOT "${CMAKE_OSX_SYSROOT}"
+            XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO"
+            XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Manual"
+            XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY ""
+            XCODE_ATTRIBUTE_DEVELOPMENT_TEAM ""
+            XCODE_ATTRIBUTE_PROVISIONING_PROFILE_SPECIFIER ""
+            # StikJIT is written for Swift 5 language mode (its own project uses 5.0).
+            XCODE_ATTRIBUTE_SWIFT_VERSION "5.0"
+            # Same reason as the app: keep -pipe/-pthread/-fvisibility out of swiftc.
+            XCODE_ATTRIBUTE_OTHER_SWIFT_FLAGS ""
+            # Module maps: idevice (StikJIT's) and StikJITIOKit (ours, see JITHelper/iokit).
+            XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS "${IPSX2_STIKJIT_DIR}/idevice ${CMAKE_SOURCE_DIR}/JITHelper/iokit"
+            XCODE_ATTRIBUTE_APPLICATION_EXTENSION_API_ONLY "YES"
+            XCODE_ATTRIBUTE_DEAD_CODE_STRIPPING "YES"
+            XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/Frameworks @executable_path/../../Frameworks /usr/lib/swift"
+            XCODE_ATTRIBUTE_SKIP_INSTALL "YES"
+        )
+        target_link_libraries(iPSX2JITHelper PRIVATE
+            "${IPSX2_STIKJIT_DIR}/idevice/libidevice_ffi.a"
+            "-framework Foundation"
+            "-framework CoreFoundation"
+            "-framework JavaScriptCore"
+            "-framework Network"
+            "-framework Security"
+            "-framework CFNetwork"
+            "-framework SystemConfiguration"
+            "-framework IOKit"
+        )
+        # App extensions start in NSExtensionMain (Xcode normally adds this for the product type).
+        target_link_options(iPSX2JITHelper PRIVATE "SHELL:-e _NSExtensionMain")
+
+        set_target_properties(iPSX2 PROPERTIES
+            XCODE_EMBED_APP_EXTENSIONS iPSX2JITHelper
+            XCODE_EMBED_APP_EXTENSIONS_REMOVE_HEADERS_ON_COPY YES
+        )
+        add_dependencies(iPSX2 iPSX2JITHelper)
+    else()
+        message(WARNING "Built-in JIT helper not built: run scripts/fetch_stikjit.sh (device builds only). "
+                        "iPSX2 still works with StikDebug.")
+    endif()
 endif()

@@ -34,6 +34,10 @@ private let licenses: [LicenseEntry] = [
     LicenseEntry(name: "plutosvg", license: "MIT", copyright: "© plutosvg contributors"),
     LicenseEntry(name: "rcheevos", license: "MIT", copyright: "© RetroAchievements contributors"),
     LicenseEntry(name: "discord-rpc", license: "MIT", copyright: "© Discord Inc."),
+    LicenseEntry(name: "StikJIT 1.9.0 (built-in JIT helper)", license: "MPL 2.0",
+                 copyright: "© StikDebug contributors. Source: github.com/StikDebug/StikJIT (tag 1.9.0)"),
+    LicenseEntry(name: "idevice", license: "MIT", copyright: "© 2026 Jackson Coxson"),
+    LicenseEntry(name: "Husk (built-in JIT design)", license: "GPL v2 or later", copyright: "© Husk contributors"),
 ]
 
 struct LicenseView: View {
