@@ -7,6 +7,9 @@
 #include "GS/Renderers/SW/GSScanlineEnvironment.h"
 
 #include "common/HostSys.h"
+#ifdef __APPLE__
+#include "common/Darwin/DarwinMisc.h" // [iPSX2] g_code_rw_offset (double-mapped JIT region)
+#endif
 
 #include <cinttypes>
 
@@ -183,7 +186,21 @@ public:
 			HostSys::BeginCodeWrite();
 
 			u8* code_ptr = GSCodeReserve::ReserveMemory(MAX_SIZE);
-			CG cg(key, code_ptr, MAX_SIZE);
+#ifdef __APPLE__
+			// [iPSX2] With TXM (iOS 26+) the JIT region is double-mapped: code runs from the RX
+			// view (code_ptr) but can only be written through the RW alias at +g_code_rw_offset
+			// (BeginCodeWrite deliberately does nothing in that mode). Generating straight into
+			// code_ptr wrote the first instruction into executable memory -> SIGBUS. This crashed
+			// BT4 entering a battle: its CPU CLUT / OI_DBZBTGames fixes draw palettes and small
+			// effect passes with the software rasterizer, whose JIT had never run before.
+			// The generated code only uses buffer-relative branches/literals and absolute
+			// addresses for external targets, so it is safe to write at one view and run at the
+			// other. g_code_rw_offset is 0 in every other JIT mode, so this changes nothing there.
+			u8* const write_ptr = code_ptr + DarwinMisc::g_code_rw_offset;
+#else
+			u8* const write_ptr = code_ptr;
+#endif
+			CG cg(key, write_ptr, MAX_SIZE);
 			cg.Generate();
 			pxAssert(cg.GetSize() < MAX_SIZE);
 
@@ -199,7 +216,9 @@ public:
 			HostSys::EndCodeWrite();
 			HostSys::FlushInstructionCache(code_ptr, static_cast<u32>(size));
 
-			ret = (VALUE)cg.GetCode();
+			// [iPSX2] cg.GetCode() is the address we wrote through; callers must get the
+			// executable (RX) address of the same entry point.
+			ret = (VALUE)(code_ptr + (reinterpret_cast<const u8*>(cg.GetCode()) - write_ptr));
 
 			m_cgmap[key] = ret;
 		}

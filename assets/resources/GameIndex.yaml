@@ -74200,7 +74200,6 @@ SLUS-21955:
 SLUS-21978:
   name: "Dragon Ball Z - Budokai Tenkaichi 4 [Beta 14 Mod]"
   region: "NTSC-U"
-  disableFastmem: 1 # [iPSX2] Entering a battle hits a fastmem fault the backpatcher can't recover, which aborts the app. Slow-path memory access avoids it.
   gsHWFixes:
     halfPixelOffset: 5 # Aligns post effects (same as Budokai Tenkaichi 3).
     cpuCLUTRender: 1 # Character, portrait and HUD palettes are drawn by the GS; without this the characters are invisible on Metal.

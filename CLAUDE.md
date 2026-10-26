@@ -83,6 +83,10 @@ iPSX2-src-main/
 
 **Built-in JIT:** `cpp/iPSX2BuiltInJIT.mm` (ARC) starts the helper extension (`swift/JITHelper/iPSX2JITHelper.swift`, Swift 5 mode, StikJIT sources compiled in) through the private NSExtension API and sends it iPSX2's PID and `Documents/StikJIT/pairingFile.plist`. The helper attaches over LocalDevVPN and runs legacy.js; iPSX2 notices the attach and calls `iPSX2_ActivateBuiltInJIT()` (ios_main.mm), which does the same brk #0x69 code-memory handshake as a StikDebug launch. This only works before the first VM thread starts in a launch.
 
+**JIT code writes (iOS 26+ / TXM dual-map):** the code region is mapped twice. Code *runs* from the RX view and must be *written* through the RW alias at `rx + DarwinMisc::g_code_rw_offset` (`HostSys::BeginCodeWrite` does nothing in this mode, and writing to the RX view is a SIGBUS). `arm64/VixlHelpers.cpp` (EE/IOP/VU/VIF recompilers) and `GS/Renderers/Common/GSFunctionMap.h` (software rasterizer JIT) apply the offset and hand out the RX address; any new code generator must do the same. The offset is 0 in the other JIT modes.
+
+**Crash logs:** an unrecoverable fault prints a `@@FATAL_FAULT@@` block (pc, fault address, ESR class, page-fault path, image offsets, frame walk) just before `Aborting application.`. The previous two sessions are kept as `pcsx2_log.prev.txt` / `pcsx2_log.prev2.txt`.
+
 **Swift version:** Swift 6.0, strict concurrency. Shared singletons (`AppState.shared`, `EmulatorBridge.shared`) are marked `@unchecked Sendable` to cross the actor boundary since they call ObjC synchronously.
 
 ## 3rd-Party Dependencies (vendored under `cpp/3rdparty/`)
