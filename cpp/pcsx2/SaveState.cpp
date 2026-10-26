@@ -758,6 +758,13 @@ std::unique_ptr<ArchiveEntryList> SaveState_DownloadState(Error* error)
 
 std::unique_ptr<SaveStateScreenshotData> SaveState_SaveScreenshot()
 {
+#if TARGET_OS_IPHONE
+	// [iPSX2 #17] The iOS build has no PNG encoder (libpng isn't linked, so SaveState_CompressScreenshot
+	// returns false), and SaveState_AddToZip treats a screenshot it can't compress as a failed save:
+	// every save state was thrown away. States are written without a screenshot (it is optional when
+	// loading), which also skips a GPU readback.
+	return nullptr;
+#else
 	static constexpr u32 SCREENSHOT_WIDTH = 640;
 	static constexpr u32 SCREENSHOT_HEIGHT = 480;
 
@@ -774,6 +781,7 @@ std::unique_ptr<SaveStateScreenshotData> SaveState_SaveScreenshot()
 	data->height = height;
 	data->pixels = std::move(pixels);
 	return data;
+#endif
 }
 
 static bool SaveState_CompressScreenshot(SaveStateScreenshotData* data, zip_t* zf)

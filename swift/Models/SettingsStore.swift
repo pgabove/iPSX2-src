@@ -151,6 +151,22 @@ final class SettingsStore: @unchecked Sendable {
         didSet { iPSX2Bridge.setINIBool("iPSX2/UI", key: "AutoHidePadWithController", value: autoHidePadWithController) }
     }
 
+    // ── Controller vibration ── [iPSX2 #17]
+    /// Play the game's DualShock 2 vibration on the connected controller.
+    var vibrationEnabled: Bool {
+        didSet {
+            iPSX2Bridge.setINIBool("iPSX2/Gamepad", key: "Vibration", value: vibrationEnabled)
+            applyVibration()
+        }
+    }
+    /// 1.0 = as the game asks; up to 2.0 (light rumble gets stronger, full rumble can't).
+    var vibrationStrength: Float {
+        didSet {
+            iPSX2Bridge.setINIFloat("iPSX2/Gamepad", key: "VibrationStrength", value: vibrationStrength)
+            applyVibration()
+        }
+    }
+
     // ── Init from INI ──
     private init() {
         // CPU
@@ -195,10 +211,14 @@ final class SettingsStore: @unchecked Sendable {
         padOpacity = iPSX2Bridge.getINIFloat("iPSX2/UI", key: "PadOpacity", defaultValue: 0.6)
         hapticFeedback = iPSX2Bridge.getINIBool("iPSX2/UI", key: "HapticFeedback", defaultValue: true)
         autoHidePadWithController = iPSX2Bridge.getINIBool("iPSX2/UI", key: "AutoHidePadWithController", defaultValue: true)
+        // Controller vibration
+        vibrationEnabled = iPSX2Bridge.getINIBool("iPSX2/Gamepad", key: "Vibration", defaultValue: true)
+        vibrationStrength = iPSX2Bridge.getINIFloat("iPSX2/Gamepad", key: "VibrationStrength", defaultValue: 1.0)
         // [P60] Force MTVU off (known buggy)
         iPSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "vuThread", value: false)
         // Apply OSD preset
         iPSX2Bridge.applyOsdPreset(Int32(clamping:osdPreset.rawValue))
+        applyVibration()
     }
 
     /// Reload ALL settings from INI (call on VM start/stop)
@@ -238,6 +258,13 @@ final class SettingsStore: @unchecked Sendable {
         padOpacity = iPSX2Bridge.getINIFloat("iPSX2/UI", key: "PadOpacity", defaultValue: 0.6)
         hapticFeedback = iPSX2Bridge.getINIBool("iPSX2/UI", key: "HapticFeedback", defaultValue: true)
         autoHidePadWithController = iPSX2Bridge.getINIBool("iPSX2/UI", key: "AutoHidePadWithController", defaultValue: true)
+        vibrationEnabled = iPSX2Bridge.getINIBool("iPSX2/Gamepad", key: "Vibration", defaultValue: true)
+        vibrationStrength = iPSX2Bridge.getINIFloat("iPSX2/Gamepad", key: "VibrationStrength", defaultValue: 1.0)
+    }
+
+    /// [iPSX2 #17] Hands the vibration settings to the emulator (also read from the INI at boot).
+    private func applyVibration() {
+        iPSX2Bridge.setControllerVibration(enabled: vibrationEnabled, strength: vibrationStrength)
     }
 
     /// Apply OSD preset — writes ALL OSD flags to INI + GSConfig

@@ -93,6 +93,12 @@ iPSX2-src-main/
 
 **Diagnostics (Settings › Emulator › Diagnostics):** INI `iPSX2/Debug` `COP2MacroMode` / `VIFUnpackMode` / `FPUMode` = 0 JIT, 1 Interpreter, 2 Check (run both, log `@@COP2_CHECK@@` / `@@VIF_CHECK@@` / `@@FPU_CHECK@@` mismatches, keep the interpreter's result). Read by `VMManager::LoadSettings()` (`iPSX2Diagnostics.h`); boot logs a `@@DIAG@@` line.
 
+**`Host::RunOnCPUThread` (ios_main.mm):** a real queue now (it was an empty stub, so core code deferred to the CPU thread never ran). Drained in `Host::PumpMessagesOnCPUThread()` at every guest vsync (the point PCSX2's save-state hotkeys run at) and in the VM thread's paused loop; runs directly when already on the VM thread; dropped when a VM starts or stops.
+
+**Save states:** `VMManager::SaveStateToSlot` / `LoadStateFromSlot` (slots 1-10, `Documents/sstates/<serial> (<crc>).NN.p2s`) queued through `iPSX2_RequestSaveState` → `iPSX2Bridge saveStateToSlot:/loadStateFromSlot:`; results come back as `iPSX2SaveStateFinished`, `iPSX2GameChanged` tells `SaveStateStore` to re-list slots. The iOS build has no PNG encoder, so `SaveState_SaveScreenshot()` returns nullptr there (a screenshot that can't be compressed fails the whole save). Logs `@@SAVESTATE@@`.
+
+**Controller vibration (`iPSX2Rumble.mm`, ARC):** `PadDualshock2::Poll` → `iPSX2_UpdatePadVibration` → GameController haptics (CoreHaptics) on a serial queue: large motor on the left handle, small on the right (one engine if the controller has no per-handle localities), watchdog stops motors when updates stop. Only controllers iPadOS exposes `GCController.haptics` for can rumble (not reachable any other way from an app). INI `iPSX2/Gamepad` `Vibration` / `VibrationStrength`. Logs `@@RUMBLE@@` (controller, localities, first request).
+
 **Swift version:** Swift 6.0, strict concurrency. Shared singletons (`AppState.shared`, `EmulatorBridge.shared`) are marked `@unchecked Sendable` to cross the actor boundary since they call ObjC synchronously.
 
 ## 3rd-Party Dependencies (vendored under `cpp/3rdparty/`)

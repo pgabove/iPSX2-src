@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 import SwiftUI
+import GameController
 
 private struct PS2Button: Identifiable {
     let id: Int
@@ -54,9 +55,37 @@ struct GamepadSettingsView: View {
     @State private var capturingIndex: Int? = nil
     @State private var mappingVersion = 0
     @State private var pollTimer: Timer? = nil
+    @State private var vibrationStatus = 0       // [iPSX2 #17] see iPSX2Bridge.controllerVibrationStatus
+    @State private var vibrationController = ""
 
     var body: some View {
         Form {
+            // [iPSX2 #17] DualShock 2 vibration on the controller.
+            Section {
+                Toggle("Vibration", isOn: $settings.vibrationEnabled)
+                if settings.vibrationEnabled {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Strength")
+                            Spacer()
+                            Text("\(Int((settings.vibrationStrength * 100).rounded()))%")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        Slider(value: $settings.vibrationStrength, in: 0.25...2.0, step: 0.25)
+                    }
+                    Button("Test Vibration") {
+                        refreshVibrationStatus()
+                        iPSX2Bridge.testControllerVibration()
+                    }
+                    .disabled(vibrationStatus != 2)
+                }
+            } header: {
+                Text("Vibration")
+            } footer: {
+                Text(vibrationFooter)
+            }
+
             Section {
                 ForEach(ps2Buttons) { btn in
                     mappingRow(btn)
@@ -77,8 +106,34 @@ struct GamepadSettingsView: View {
         }
         .navigationTitle("Game Controller")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            refreshVibrationStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidConnect)) { _ in
+            refreshVibrationStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidDisconnect)) { _ in
+            refreshVibrationStatus()
+        }
         .onDisappear {
             stopCapture()
+        }
+    }
+
+    /// [iPSX2 #17] Whether iPadOS lets apps vibrate the connected controller.
+    private func refreshVibrationStatus() {
+        vibrationStatus = iPSX2Bridge.controllerVibrationStatus()
+        vibrationController = iPSX2Bridge.controllerName() ?? ""
+    }
+
+    private var vibrationFooter: String {
+        switch vibrationStatus {
+        case 2:
+            return "\(vibrationController) supports vibration. Games that use the DualShock 2's motors rumble the controller (large motor on the left, small motor on the right)."
+        case 1:
+            return "iPadOS doesn't give apps access to the vibration motors of \(vibrationController), so it can't rumble. Vibration works with controllers iPadOS supports it for, such as PlayStation (DualShock 4, DualSense) and Xbox Wireless controllers."
+        default:
+            return "Connect a controller to use vibration."
         }
     }
 

@@ -8,6 +8,7 @@ import GameController
 struct GameScreenView: View {
     @State private var appState = AppState.shared
     @State private var settings = SettingsStore.shared
+    @State private var saveStates = SaveStateStore.shared // [iPSX2 #17]
     @State private var padVisible = true
     @State private var fullScreen = false
     @State private var controllerConnected = false // [iPSX2 #12]
@@ -63,7 +64,10 @@ struct GameScreenView: View {
             iPSX2Bridge.setFullScreen(newValue)
         }
         // [iPSX2 #12] Touch controls follow the physical controller.
-        .onAppear { refreshControllerState(initial: true) }
+        .onAppear {
+            refreshControllerState(initial: true)
+            saveStates.refresh() // [iPSX2 #17]
+        }
         .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidConnect)) { _ in
             refreshControllerState()
         }
@@ -105,6 +109,12 @@ struct GameScreenView: View {
         }
     }
 
+    /// [iPSX2 #17] "Slot 3 — Oct 26, 2026 at 3:04 PM" / "Slot 3 — Empty"
+    private static func slotTitle(_ slot: SaveStateSlot) -> String {
+        guard let date = slot.date else { return "Slot \(slot.id) — Empty" }
+        return "Slot \(slot.id) — \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
+
     private func menuOverlay(isLandscape: Bool) -> some View {
         VStack {
             HStack {
@@ -140,6 +150,35 @@ struct GameScreenView: View {
                 Toggle(isOn: $fullScreen) {
                     Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
+            }
+            // [iPSX2 #17] Save states (PCSX2 slots 1-10 of this game).
+            if saveStates.isAvailable {
+                Divider()
+                Menu {
+                    ForEach(saveStates.slots) { slot in
+                        Button {
+                            saveStates.save(slot: slot.id)
+                        } label: {
+                            Text(Self.slotTitle(slot))
+                        }
+                    }
+                } label: {
+                    Label("Save State", systemImage: "square.and.arrow.down")
+                }
+                .disabled(saveStates.isBusy)
+                Menu {
+                    ForEach(saveStates.slots) { slot in
+                        Button {
+                            saveStates.load(slot: slot.id)
+                        } label: {
+                            Text(Self.slotTitle(slot))
+                        }
+                        .disabled(slot.isEmpty)
+                    }
+                } label: {
+                    Label("Load State", systemImage: "clock.arrow.circlepath")
+                }
+                .disabled(saveStates.isBusy || !saveStates.hasSavedState)
             }
             Divider()
             Button {

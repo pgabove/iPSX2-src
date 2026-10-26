@@ -135,4 +135,24 @@ typedef NS_ENUM(NSInteger, iPSX2PadButton) {
 // [iPSX2 #12] YES while SDL has a physical game controller open.
 + (BOOL)isGamepadConnected;
 
+// [iPSX2 #17] Save states: PCSX2's per-game slot files (Documents/sstates), slots 1-10.
+// Modification time (seconds since 1970) of each slot's file, 0 for an empty slot. nil when no
+// game with a disc serial is running (BIOS, ELF), since the files are named after the serial.
++ (nullable NSArray<NSNumber *> *)saveStateSlotTimestamps NS_SWIFT_NAME(saveStateSlotTimestamps());
+// Queue a save/load on the emulator thread; it runs at the next frame and shows its progress on the
+// in-game OSD. iPSX2SaveStateFinished (userInfo: slot, save, ok) follows on the main queue.
+// NO if no game is running.
++ (BOOL)saveStateToSlot:(NSInteger)slot NS_SWIFT_NAME(saveState(slot:));
++ (BOOL)loadStateFromSlot:(NSInteger)slot NS_SWIFT_NAME(loadState(slot:));
+
+// [iPSX2 #17] Controller vibration (the DualShock 2 motors, played through iPadOS's controller haptics).
+// 0 = no controller, 1 = iPadOS offers no vibration for this controller, 2 = vibration available.
++ (NSInteger)controllerVibrationStatus;
+// Name of the controller vibration goes to; nil when none is connected.
++ (nullable NSString *)controllerName;
++ (void)setControllerVibrationEnabled:(BOOL)enabled strength:(float)strength
+    NS_SWIFT_NAME(setControllerVibration(enabled:strength:));
+// Large motor, then small motor, at the current strength.
++ (void)testControllerVibration;
+
 @end

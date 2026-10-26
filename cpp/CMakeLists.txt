@@ -186,6 +186,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         ${CMAKE_SOURCE_DIR}/../swift/Models/SettingsStore.swift
         ${CMAKE_SOURCE_DIR}/../swift/Models/FileImportHandler.swift
         ${CMAKE_SOURCE_DIR}/../swift/Models/BuiltInJITModel.swift
+        ${CMAKE_SOURCE_DIR}/../swift/Models/SaveStateStore.swift
         ${CMAKE_SOURCE_DIR}/../swift/Views/JITCardView.swift
         ${CMAKE_SOURCE_DIR}/../swift/Views/Settings/JITSettingsView.swift
     )
@@ -193,9 +194,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     # Generate Info.plist with version from CMake
     configure_file("${CMAKE_SOURCE_DIR}/Info.plist.in" "${CMAKE_BINARY_DIR}/Info.plist" @ONLY)
 
-    add_executable(iPSX2 ios_main.mm iPSX2Bridge.mm iPSX2BuiltInJIT.mm ${SWIFT_SOURCES})
-    # The built-in JIT coordinator is written for ARC (the other .mm files are not).
-    set_source_files_properties(iPSX2BuiltInJIT.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    add_executable(iPSX2 ios_main.mm iPSX2Bridge.mm iPSX2BuiltInJIT.mm iPSX2Rumble.mm ${SWIFT_SOURCES})
+    # The built-in JIT coordinator and controller vibration [iPSX2 #17] are written for ARC (the other
+    # .mm files are not).
+    set_source_files_properties(iPSX2BuiltInJIT.mm iPSX2Rumble.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     set_target_properties(iPSX2 PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_GUI_IDENTIFIER "${IPSX2_BUNDLE_ID}"
@@ -241,7 +243,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     # Let's check. If PRIVATE, we might need to link SDL3 again or make PCSX2 link PUBLIC.
     # For now assume it works or we link SDL3::SDL3.
     # We need headers.
-    target_link_libraries(iPSX2 PRIVATE "-framework UIKit" "-framework Metal" "-framework MetalKit" "-framework QuartzCore" "-framework CoreText" "-framework CoreGraphics")
+    target_link_libraries(iPSX2 PRIVATE "-framework UIKit" "-framework Metal" "-framework MetalKit" "-framework QuartzCore" "-framework CoreText" "-framework CoreGraphics"
+        "-framework GameController" "-framework CoreHaptics") # [iPSX2 #17] controller vibration
 	# Git short hash for BUILD_ID
 	execute_process(
 		COMMAND git rev-parse --short HEAD

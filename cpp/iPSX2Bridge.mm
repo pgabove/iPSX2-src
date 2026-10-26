@@ -14,6 +14,8 @@ extern "C" int csops(pid_t pid, unsigned int ops, void* useraddr, size_t usersiz
 extern "C" void iPSX2_SetSDLFullscreen(bool enabled);
 extern "C" SDL_Gamepad* iPSX2_GetActiveGamepad();
 extern "C" void iPSX2_SetOverlaySafeAreaPoints(CGFloat top, CGFloat left, CGFloat right); // ios_main.mm
+extern "C" bool iPSX2_RequestSaveState(int slot, bool save);                               // ios_main.mm
+#include "iPSX2Rumble.h"
 #include "Common.h"
 #include "CDVD/CDVD.h"
 #include "VMManager.h"
@@ -495,6 +497,51 @@ static NSDate* s_lastNVMSaveDate = nil;
         g_p44_settings_interface->RemoveSection("iPSX2/GamepadMapping");
         g_p44_settings_interface->Save();
     }
+}
+
+#pragma mark - Save states [iPSX2 #17]
+
++ (nullable NSArray<NSNumber *> *)saveStateSlotTimestamps {
+    if (!VMManager::HasValidVM())
+        return nil;
+    const std::string serial = VMManager::GetDiscSerial();
+    if (serial.empty())
+        return nil;
+    const u32 crc = VMManager::GetDiscCRC();
+    NSMutableArray<NSNumber *> *stamps = [NSMutableArray arrayWithCapacity:VMManager::NUM_SAVE_STATE_SLOTS];
+    for (s32 slot = 1; slot <= VMManager::NUM_SAVE_STATE_SLOTS; slot++) {
+        const std::string path = VMManager::GetSaveStateFileName(serial.c_str(), crc, slot);
+        FILESYSTEM_STAT_DATA sd = {};
+        const bool exists = !path.empty() && FileSystem::StatFile(path.c_str(), &sd);
+        [stamps addObject:@(exists ? static_cast<double>(sd.ModificationTime) : 0.0)];
+    }
+    return stamps;
+}
+
++ (BOOL)saveStateToSlot:(NSInteger)slot {
+    return iPSX2_RequestSaveState(static_cast<int>(slot), true) ? YES : NO;
+}
+
++ (BOOL)loadStateFromSlot:(NSInteger)slot {
+    return iPSX2_RequestSaveState(static_cast<int>(slot), false) ? YES : NO;
+}
+
+#pragma mark - Controller vibration [iPSX2 #17]
+
++ (NSInteger)controllerVibrationStatus {
+    return iPSX2_ControllerRumbleStatus();
+}
+
++ (nullable NSString *)controllerName {
+    return iPSX2_ControllerRumbleName();
+}
+
++ (void)setControllerVibrationEnabled:(BOOL)enabled strength:(float)strength {
+    iPSX2_SetControllerRumbleConfig(enabled ? true : false, strength);
+}
+
++ (void)testControllerVibration {
+    iPSX2_TestControllerRumble();
 }
 
 @end

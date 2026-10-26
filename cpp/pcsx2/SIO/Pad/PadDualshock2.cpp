@@ -16,6 +16,15 @@
 extern void AndroidUpdatePadVibration(u32 pad_index, float large_intensity, float small_intensity);
 #endif
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+// [iPSX2 #17] iPSX2Rumble.mm: plays the motors on the connected controller's haptics.
+extern "C" void iPSX2_UpdatePadVibration(unsigned int pad_index, float large_intensity, float small_intensity);
+#define iPSX2_PAD_VIBRATION 1
+#endif
+#endif
+
 static const InputBindingInfo s_bindings[] = {
 	// clang-format off
 	{"Up", TRANSLATE_NOOP("Pad", "D-Pad Up"), ICON_PF_DPAD_UP, InputBindingInfo::Type::Button, PadDualshock2::Inputs::PAD_UP, GenericInputBinding::DPadUp},
@@ -255,6 +264,9 @@ u8 PadDualshock2::Poll(u8 commandByte)
 			InputManager::SetPadVibrationIntensity(this->unifiedSlot, large_intensity, small_intensity);
 #if defined(__ANDROID__)
 			AndroidUpdatePadVibration(this->unifiedSlot, large_intensity, small_intensity);
+#endif
+#if defined(iPSX2_PAD_VIBRATION)
+			iPSX2_UpdatePadVibration(this->unifiedSlot, large_intensity, small_intensity);
 #endif
 
 			// PS1 mode: If the controller is still in digital mode, it is time to stop acknowledging.

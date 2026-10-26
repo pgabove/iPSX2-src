@@ -52,7 +52,14 @@
 #include <condition_variable>
 #include <atomic>
 #include <optional>
+#include <deque>      // [iPSX2 #17] CPU-thread work queue
+#include <functional>
+#include <future>
+#include <memory>
+#include <pthread.h>
 #include <sys/stat.h> // For mkdir
+#include "common/Timer.h"
+#include "iPSX2Rumble.h" // [iPSX2 #17] controller vibration
 
 struct rc_client_event_t;
 struct rc_client_t;
@@ -158,6 +165,74 @@ extern "C" bool VMController_IsStopRequested() {
     return s_requestVMStop.load();
 }
 
+// [iPSX2 #17] Host::RunOnCPUThread. The core and the in-game menu (save states) hand work to the VM
+// thread through this queue. It is drained at every guest vsync while a game runs
+// (PumpMessagesOnCPUThread, the point PCSX2's own save-state hotkeys run at) and every 10 ms while
+// the VM is paused. Work still queued when a VM starts or stops is dropped. (RunOnCPUThread used to
+// be an empty stub, so anything the core deferred to the CPU thread silently never ran.)
+static std::mutex s_cpuWorkMutex;
+static std::deque<std::function<void()>> s_cpuWork;
+static std::atomic<bool> s_cpuWorkPending{false};
+static std::atomic<bool> s_cpuThreadKnown{false};
+static std::atomic<pthread_t> s_cpuThread{};
+
+static bool iPSX2_IsOnCPUThread()
+{
+    return s_cpuThreadKnown.load(std::memory_order_acquire) &&
+           pthread_equal(pthread_self(), s_cpuThread.load(std::memory_order_relaxed));
+}
+
+static void iPSX2_RunCPUThreadWork()
+{
+    if (!s_cpuWorkPending.load(std::memory_order_acquire))
+        return;
+    std::deque<std::function<void()>> work;
+    {
+        std::lock_guard<std::mutex> lk(s_cpuWorkMutex);
+        work.swap(s_cpuWork);
+        s_cpuWorkPending.store(false, std::memory_order_release);
+    }
+    for (std::function<void()>& fn : work)
+        fn();
+}
+
+static void iPSX2_DropCPUThreadWork()
+{
+    std::deque<std::function<void()>> work;
+    {
+        std::lock_guard<std::mutex> lk(s_cpuWorkMutex);
+        work.swap(s_cpuWork);
+        s_cpuWorkPending.store(false, std::memory_order_release);
+    }
+    if (!work.empty())
+        Console.WriteLn("[VM] Dropped %zu queued CPU-thread task(s).", work.size());
+    // Destroying the tasks here also releases anyone blocked in RunOnCPUThread(..., true).
+}
+
+// [iPSX2 #17] The in-game menu lists save states by disc serial; tell it to look again.
+static void iPSX2_PostGameChanged()
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"iPSX2GameChanged" object:nil];
+    });
+}
+
+// [iPSX2 #17] Vibration settings from the INI (also pushed by SettingsStore when they change).
+static void iPSX2_LoadVibrationSettings()
+{
+    extern INISettingsInterface* g_p44_settings_interface;
+    bool enabled = true;
+    float strength = 1.0f;
+    {
+        std::lock_guard<std::mutex> lk(g_settingsMutex);
+        if (g_p44_settings_interface) {
+            enabled = g_p44_settings_interface->GetBoolValue("iPSX2/Gamepad", "Vibration", true);
+            strength = g_p44_settings_interface->GetFloatValue("iPSX2/Gamepad", "VibrationStrength", 1.0f);
+        }
+    }
+    iPSX2_SetControllerRumbleConfig(enabled, strength);
+}
+
 // Built-in JIT (iPSX2BuiltInJIT.mm): the VM thread sets up its memory once per launch, so JIT
 // can only be turned on before the first game (or BIOS) starts.
 extern "C" bool iPSX2_VMThreadWasCreated(void) {
@@ -242,6 +317,10 @@ extern "C" int iPSX2_ActivateBuiltInJIT(void) {
     Console.WriteLn("[VM] Creating persistent VM thread...");
 
     std::thread vmThread([]() {
+        // [iPSX2 #17] Host::RunOnCPUThread runs work directly when called from this thread.
+        s_cpuThread.store(pthread_self(), std::memory_order_relaxed);
+        s_cpuThreadKnown.store(true, std::memory_order_release);
+
         // === ONE-TIME INIT (runs once per app lifetime) ===
         Console.WriteLn("[VM] VM Thread: CPUThreadInitialize (once)...");
         if (!VMManager::Internal::CPUThreadInitialize()) {
@@ -349,9 +428,12 @@ extern "C" int iPSX2_ActivateBuiltInJIT(void) {
             }
 
             // --- Initialize & Execute VM ---
+            iPSX2_DropCPUThreadWork(); // [iPSX2 #17] nothing from a previous game carries over
+            iPSX2_LoadVibrationSettings();
             if (VMManager::Initialize(boot_params)) {
                 Console.WriteLn("[VM] VM initialized successfully");
                 VMManager::SetState(VMState::Running);
+                iPSX2_PostGameChanged(); // [iPSX2 #17] the disc serial is known now
 
                 while (true) {
                     if (VMController_IsStopRequested()) {
@@ -365,6 +447,7 @@ extern "C" int iPSX2_ActivateBuiltInJIT(void) {
                     } else if (state == VMState::Running) {
                         VMManager::Execute();
                     } else {
+                        iPSX2_RunCPUThreadWork(); // [iPSX2 #17] e.g. a save state asked for while paused
                         std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     }
                 }
@@ -375,6 +458,8 @@ extern "C" int iPSX2_ActivateBuiltInJIT(void) {
                 Console.Error("VM Thread: VMManager::Initialize failed!");
                 Host::ReportErrorAsync("Startup Error", "VM Initialization Failed.");
             }
+            iPSX2_DropCPUThreadWork();       // [iPSX2 #17]
+            iPSX2_StopControllerRumble();    // [iPSX2 #17] don't leave the motors running
 
             // --- Post-shutdown: reset state, notify UI ---
             s_vmThreadActive.store(false);
@@ -619,12 +704,40 @@ namespace Host
     void EndTextInput() {}
     bool IsFullscreen() { return true; }
     void SetMouseMode(bool, bool) {}
-    void OnGameChanged(const std::string&, const std::string&, const std::string&, const std::string&, unsigned int, unsigned int) {}
+    void OnGameChanged(const std::string&, const std::string&, const std::string&, const std::string&, unsigned int, unsigned int) {
+        iPSX2_PostGameChanged(); // [iPSX2 #17] refresh the save-state slots
+    }
     void OnVMDestroyed() {}
     void SetFullscreen(bool) {}
     void BeginTextInput() {}
     bool ConfirmMessage(std::string_view, std::string_view) { return true; }
-    void RunOnCPUThread(std::function<void()>, bool) {}
+    // [iPSX2 #17] See s_cpuWork above.
+    void RunOnCPUThread(std::function<void()> function, bool block) {
+        if (iPSX2_IsOnCPUThread()) {
+            function();
+            return;
+        }
+        if (!s_vmThreadActive.load()) {
+            Console.Warning("Host::RunOnCPUThread: no VM is running; request dropped.");
+            return;
+        }
+        std::future<void> finished;
+        if (block) {
+            auto done = std::make_shared<std::promise<void>>();
+            finished = done->get_future();
+            function = [fn = std::move(function), done]() {
+                fn();
+                done->set_value();
+            };
+        }
+        {
+            std::lock_guard<std::mutex> lk(s_cpuWorkMutex);
+            s_cpuWork.push_back(std::move(function));
+            s_cpuWorkPending.store(true, std::memory_order_release);
+        }
+        if (block)
+            finished.wait(); // also returns if the task is dropped (broken promise)
+    }
     void ReportInfoAsync(std::string_view, std::string_view) {}
     void ReportErrorAsync(std::string_view title, std::string_view msg) {
         Console.Error("Host::ReportErrorAsync: %s - %s", std::string(title).c_str(), std::string(msg).c_str());
@@ -665,6 +778,9 @@ namespace Host
             VMManager::SetState(VMState::Stopping);
             return;
         }
+
+        // [iPSX2 #17] Work handed over with Host::RunOnCPUThread (save/load state, ...).
+        iPSX2_RunCPUThreadWork();
 
         PadBase* pad = Pad::GetPad(0, 0);
         if (!pad) return;
@@ -814,6 +930,34 @@ extern "C" SDL_Gamepad* iPSX2_GetActiveGamepad() {
     return Host::s_gamepad;
 }
 
+// [iPSX2 #17] Save/load state from the in-game menu (main thread). The work runs on the VM thread at
+// the next vsync through VMManager's slot functions, the same way PCSX2's save-state hotkeys do;
+// they show progress and errors on the in-game OSD. Afterwards iPSX2SaveStateFinished
+// (userInfo: slot, save, ok) is posted on the main queue. NO if no game is running.
+extern "C" bool iPSX2_RequestSaveState(int slot, bool save) {
+    if (slot < 1 || slot > VMManager::NUM_SAVE_STATE_SLOTS || !s_vmThreadActive.load() || !VMManager::HasValidVM())
+        return false;
+
+    Console.WriteLn("@@SAVESTATE@@ %s slot=%d requested", save ? "save" : "load", slot);
+    Host::RunOnCPUThread([slot, save]() {
+        bool ok = false;
+        if (VMManager::HasValidVM()) {
+            Common::Timer timer;
+            // Zip on this thread: the file is complete when the menu is told to refresh (zstd
+            // takes a fraction of a second on these iPads).
+            ok = save ? VMManager::SaveStateToSlot(slot, false) : VMManager::LoadStateFromSlot(slot);
+            Console.WriteLn("@@SAVESTATE@@ %s slot=%d ok=%d serial=%s crc=%08X ms=%.0f", save ? "save" : "load", slot,
+                ok ? 1 : 0, VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC(), timer.GetTimeMilliseconds());
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"iPSX2SaveStateFinished"
+                                                                object:nil
+                                                              userInfo:@{@"slot": @(slot), @"save": @(save), @"ok": @(ok)}];
+        });
+    });
+    return true;
+}
+
 namespace Common {
     bool PlaySoundAsync(const char*) { return false; }
 }
@@ -953,6 +1097,7 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
             return;
         }
         s_initialized = true;
+        iPSX2_RumbleInit(); // [iPSX2 #17] start tracking controllers for vibration
     }
     
     // --- Setup PCSX2 Environment ---
@@ -1639,6 +1784,7 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
 // NVM save when app loses focus
     extern void cdvdSaveNVRAM();
     cdvdSaveNVRAM();
+    iPSX2_StopControllerRumble(); // [iPSX2 #17]
 }
 
 - (void)sceneWillEnterForeground:(UIScene *)scene {
