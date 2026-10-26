@@ -550,7 +550,11 @@ static void mVU_FTOIx(mP, const a64::MemOperand& addr, microOpcode opEnum)
 //		xCVTTPS2DQ(Fs, Fs);
         armAsm->Fcvtzs(Fs.V4S(), Fs.V4S());
 //		xPXOR(Fs, t1);
-        armAsm->Eor(Fs.V16B(), Fs.V16B(), t1.V16B());
+        // [iPSX2 #16] FCVTZS already saturates (+big -> 0x7fffffff, -big -> 0x80000000), unlike
+        // cvttps2dq, so the x86 XOR turned every positive overflow into 0x80000000. Only positive
+        // NaN (FCVTZS gives 0) still needs forcing to 0x7fffffff: OR in 0x7fffffff on those lanes.
+        armAsm->Ushr(t1.V4S(), t1.V4S(), 1);
+        armAsm->Orr(Fs.V16B(), Fs.V16B(), t1.V16B());
 
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.regAlloc->clearNeeded(t1);
