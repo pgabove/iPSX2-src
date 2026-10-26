@@ -7,6 +7,10 @@
 #include "GS/Renderers/Metal/GSTextureMTL.h"
 #include "GS/GSPerfMon.h"
 
+// [iPSX2 #12] Used for ProMotion frame pacing in EndPresent (declared in VMManager.h / pcsx2/GS.h).
+namespace VMManager { float GetTargetSpeed(); }
+extern double GetVerticalFrequency();
+
 #include "common/Console.h"
 #include "common/HostSys.h"
 
@@ -1406,7 +1410,22 @@ void GSDeviceMTL::EndPresent()
 			(m_use_present_drawable == UsePresentDrawable::IfVsync && m_vsync_mode == GSVSyncMode::FIFO);
 
 		if (use_present_drawable)
-			[m_current_render_cmdbuf presentDrawable:m_current_drawable];
+		{
+#if TARGET_OS_IPHONE
+			// [iPSX2 #12] ProMotion (120Hz) pacing. Presenting "as soon as possible" lets a ~60fps
+			// game land on uneven 120Hz refresh slots, so some frames show for 1 refresh and some
+			// for 3 (judder). Holding each frame for 95% of an NTSC frame makes them show for an
+			// even 2 refreshes. On a 60Hz screen this is a no-op (15.8ms < one refresh). Only at
+			// normal speed and ~60Hz: for turbo/slow-motion, or PAL (50Hz doesn't divide 120Hz, so
+			// a minimum hold would round up to 3 refreshes = 40fps), we keep presenting immediately.
+			const float target_speed = VMManager::GetTargetSpeed();
+			const double vfreq = GetVerticalFrequency();
+			if (target_speed > 0.99f && target_speed < 1.01f && vfreq > 59.0 && vfreq < 61.0)
+				[m_current_render_cmdbuf presentDrawable:m_current_drawable afterMinimumDuration:(0.95 / vfreq)];
+			else
+#endif
+				[m_current_render_cmdbuf presentDrawable:m_current_drawable];
+		}
 		else
 			[m_current_render_cmdbuf addScheduledHandler:[drawable = std::move(m_current_drawable)](id<MTLCommandBuffer>){
 				[drawable present];

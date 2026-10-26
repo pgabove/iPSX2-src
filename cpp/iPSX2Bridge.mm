@@ -13,6 +13,7 @@ extern "C" int csops(pid_t pid, unsigned int ops, void* useraddr, size_t usersiz
 
 extern "C" void iPSX2_SetSDLFullscreen(bool enabled);
 extern "C" SDL_Gamepad* iPSX2_GetActiveGamepad();
+extern "C" void iPSX2_SetOverlaySafeAreaPoints(CGFloat top, CGFloat left, CGFloat right); // ios_main.mm
 #include "Common.h"
 #include "CDVD/CDVD.h"
 #include "VMManager.h"
@@ -36,6 +37,16 @@ static NSDate* s_lastNVMSaveDate = nil;
 + (UIView *)gameRenderView {
     extern UIView* g_gameRenderView;
     return g_gameRenderView;
+}
+
+// [iPSX2 #12] Converted to render pixels in ios_main.mm (kept in points there so a later scale
+// change re-applies them correctly).
++ (void)setOverlaySafeAreaTop:(CGFloat)top left:(CGFloat)left right:(CGFloat)right {
+    iPSX2_SetOverlaySafeAreaPoints(top, left, right);
+}
+
++ (BOOL)isGamepadConnected {
+    return iPSX2_GetActiveGamepad() != nullptr;
 }
 
 + (void)saveNVRAM {

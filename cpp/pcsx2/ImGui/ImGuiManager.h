@@ -35,6 +35,11 @@ namespace ImGuiManager
 	/// Updates internal state when the window is size.
 	void WindowResized();
 
+	/// [iPSX2] Pixel insets that keep the top-corner overlays (performance stats, recording,
+	/// capture) clear of the status bar / window controls when the game view extends under them.
+	/// Set from the iOS UI; safe to call from any thread.
+	void SetOverlaySafeArea(float top, float left, float right);
+
 	/// Updates scaling of the on-screen elements.
 	void RequestScaleUpdate();
 

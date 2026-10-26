@@ -20,6 +20,7 @@
 #include "ImGui/ImGuiFullscreen.h"
 #include "ImGui/ImGuiManager.h"
 #include "ImGui/ImGuiOverlays.h"
+#include <atomic> // [iPSX2] overlay safe-area insets
 #include "Input/InputManager.h"
 #include "MTGS.h"
 #include "PerformanceMetrics.h"
@@ -1171,17 +1172,35 @@ void SaveStateSelectorUI::ShowSlotOSDMessage()
 		Host::OSD_QUICK_DURATION);
 }
 
+// [iPSX2] See ImGuiManager::SetOverlaySafeArea. Written from the UI thread, read on the GS thread.
+static std::atomic<float> s_overlay_safe_top{0.0f};
+static std::atomic<float> s_overlay_safe_left{0.0f};
+static std::atomic<float> s_overlay_safe_right{0.0f};
+
+void ImGuiManager::SetOverlaySafeArea(float top, float left, float right)
+{
+	s_overlay_safe_top.store(std::max(0.0f, top), std::memory_order_relaxed);
+	s_overlay_safe_left.store(std::max(0.0f, left), std::memory_order_relaxed);
+	s_overlay_safe_right.store(std::max(0.0f, right), std::memory_order_relaxed);
+}
+
 void ImGuiManager::RenderOverlays()
 {
 	const float scale = ImGuiManager::GetGlobalScale();
 	const float margin = std::ceil(10.0f * scale);
 	const float spacing = std::ceil(5.0f * scale);
-	float position_y = margin;
+	// [iPSX2] Start below the status bar / window controls when the game view runs under them.
+	// The margin passed to these three only sets the horizontal offset from their corner.
+	float position_y = margin + s_overlay_safe_top.load(std::memory_order_relaxed);
+	const float margin_right = margin + s_overlay_safe_right.load(std::memory_order_relaxed);
+	const float margin_perf = (GSConfig.OsdPerformancePos == OsdOverlayPos::TopLeft) ?
+								  margin + s_overlay_safe_left.load(std::memory_order_relaxed) :
+								  margin_right;
 
-	DrawVideoCaptureOverlay(position_y, scale, margin, spacing);
-	DrawInputRecordingOverlay(position_y, scale, margin, spacing);
+	DrawVideoCaptureOverlay(position_y, scale, margin_right, spacing);
+	DrawInputRecordingOverlay(position_y, scale, margin_right, spacing);
 	if (GSConfig.OsdPerformancePos != OsdOverlayPos::None)
-		DrawPerformanceOverlay(position_y, scale, margin, spacing);
+		DrawPerformanceOverlay(position_y, scale, margin_perf, spacing);
 	DrawSettingsOverlay(scale, margin, spacing);
 	DrawInputsOverlay(scale, margin, spacing);
 	if (SaveStateSelectorUI::s_open)

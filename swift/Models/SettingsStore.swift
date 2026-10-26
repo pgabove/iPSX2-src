@@ -128,6 +128,10 @@ final class SettingsStore: @unchecked Sendable {
     var hapticFeedback: Bool {
         didSet { iPSX2Bridge.setINIBool("iPSX2/UI", key: "HapticFeedback", value: hapticFeedback) }
     }
+    /// [iPSX2 #12] Hide the touch controls while a physical controller is connected.
+    var autoHidePadWithController: Bool {
+        didSet { iPSX2Bridge.setINIBool("iPSX2/UI", key: "AutoHidePadWithController", value: autoHidePadWithController) }
+    }
 
     // ── Init from INI ──
     private init() {
@@ -167,6 +171,7 @@ final class SettingsStore: @unchecked Sendable {
         // UI
         padOpacity = iPSX2Bridge.getINIFloat("iPSX2/UI", key: "PadOpacity", defaultValue: 0.6)
         hapticFeedback = iPSX2Bridge.getINIBool("iPSX2/UI", key: "HapticFeedback", defaultValue: true)
+        autoHidePadWithController = iPSX2Bridge.getINIBool("iPSX2/UI", key: "AutoHidePadWithController", defaultValue: true)
         // [P60] Force MTVU off (known buggy)
         iPSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "vuThread", value: false)
         // Apply OSD preset
@@ -205,6 +210,7 @@ final class SettingsStore: @unchecked Sendable {
         osdShowFrameTimes = iPSX2Bridge.getINIBool("EmuCore/GS", key: "OsdShowFrameTimes", defaultValue: false)
         padOpacity = iPSX2Bridge.getINIFloat("iPSX2/UI", key: "PadOpacity", defaultValue: 0.6)
         hapticFeedback = iPSX2Bridge.getINIBool("iPSX2/UI", key: "HapticFeedback", defaultValue: true)
+        autoHidePadWithController = iPSX2Bridge.getINIBool("iPSX2/UI", key: "AutoHidePadWithController", defaultValue: true)
     }
 
     /// Apply OSD preset — writes ALL OSD flags to INI + GSConfig

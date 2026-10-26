@@ -100,6 +100,9 @@ namespace GameDatabaseSchema
 		ClampMode eeClampMode = ClampMode::Undefined;
 		ClampMode vu0ClampMode = ClampMode::Undefined;
 		ClampMode vu1ClampMode = ClampMode::Undefined;
+		// [iPSX2] Per-game opt-out of fast memory access (fastmem). Set with "disableFastmem: 1".
+		// Used for games that hit a fastmem fault the backpatcher cannot recover (e.g. BT4 mods).
+		bool disableFastmem = false;
 		std::vector<GamefixId> gameFixes;
 		std::vector<std::pair<SpeedHack, int>> speedHacks;
 		std::vector<std::pair<GSHWFixId, s32>> gsHWFixes;

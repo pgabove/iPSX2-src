@@ -15,7 +15,9 @@ final class AppState: @unchecked Sendable {
     var currentScreen: Screen = .menu
     var selectedTab: Int = 0
     var runningGameName: String? = nil
-    var hideStatusBar: Bool = false
+    /// [iPSX2 #12] Status bar and home indicator are hidden whenever a game is on screen.
+    /// (Was a stored flag that nothing ever set, so the status bar always covered the game.)
+    var hideStatusBar: Bool { currentScreen == .playing }
 
     @ObservationIgnored private var pendingBootAction: (() -> Void)?
     @ObservationIgnored private var shutdownObserver: NSObjectProtocol?

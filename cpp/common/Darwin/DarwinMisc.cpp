@@ -44,6 +44,7 @@ extern "C" void pthread_jit_write_protect_np(int enabled);
 #include <mach/task.h>
 #include <mach/vm_map.h>
 #include <mutex>
+#include <atomic>
 #include <TargetConditionals.h>
 
 #if !TARGET_OS_IPHONE
@@ -1297,6 +1298,10 @@ void DarwinMisc::LegacyEnsureExecutable()
 
 #endif // _M_ARM64
 
+// [iPSX2 #12] Last page-fault decision recorded by PageFaultHandler::HandlePageFault (vtlb.cpp).
+extern std::atomic<uint32_t> g_hpf_last_path;
+extern std::atomic<uintptr_t> g_hpf_last_fa;
+
 namespace PageFaultHandler
 {
 	static void SignalHandler(int sig, siginfo_t* info, void* ctx);
@@ -1306,6 +1311,9 @@ namespace PageFaultHandler
 	static bool s_installed = false;
 	// Crash log file descriptor (opened once, never closed for signal safety)
 	static int s_crash_log_fd = -1;
+	// [iPSX2 #12] True once stderr has been pointed at the crash log (Install_Fresh dup2s it).
+	// Writing to both then put every fragment in the log twice ("@@SIGBUS@@@@SIGBUS@@ host_pc= host_pc=").
+	static bool s_crash_log_mirrors_stderr = false;
 	
 	// Quarantine Buffer (Ring Buffer)
 	struct QuarantineEntry {
@@ -1321,8 +1329,8 @@ namespace PageFaultHandler
 		size_t len = 0;
 		while (str[len]) len++;
 		write(STDERR_FILENO, str, len);
-		// Also write to crash log file if available
-		if (s_crash_log_fd >= 0) {
+		// Also write to crash log file if available (and if it isn't already where stderr goes)
+		if (s_crash_log_fd >= 0 && s_crash_log_fd != STDERR_FILENO && !s_crash_log_mirrors_stderr) {
 			write(s_crash_log_fd, str, len);
 		}
 	}
@@ -1342,7 +1350,153 @@ namespace PageFaultHandler
 		SafeWriteStr("\n");
 	}
 
+	// ---------------------------------------------------------------------------------------
+	// [iPSX2 #12] Unrecoverable-fault report.
+	// The detailed SIGBUS telemetry in SignalHandler is capped at the first 3 events, because
+	// normal SMC/W^X traffic raises many SIGBUS. The fault that actually kills the app usually
+	// comes much later (BT4: ~70 s into play, entering a battle), so it was never logged — the
+	// log just ended in "Aborting application.". This report is printed for every fault we
+	// cannot recover from, right before aborting, so the cause always lands in pcsx2_log.txt.
+	// Only async-signal-safe primitives are used: write(), vm_read_overwrite(), dladdr().
+	// ---------------------------------------------------------------------------------------
+	static void SafeHex(char* out, u64 val, int digits)
+	{
+		static const char hex[] = "0123456789abcdef";
+		for (int i = digits - 1; i >= 0; --i)
+		{
+			out[i] = hex[val & 0xF];
+			val >>= 4;
+		}
+		out[digits] = 0;
+	}
 
+	static void SafeWriteField(const char* key, u64 val, int digits)
+	{
+		char buf[24];
+		buf[0] = '0';
+		buf[1] = 'x';
+		SafeHex(buf + 2, val, digits);
+		SafeWriteStr(key);
+		SafeWriteStr(buf);
+	}
+
+	// Reads through the kernel, so a bad address returns false instead of faulting again.
+	static bool SafeReadMem(uintptr_t addr, void* out, vm_size_t size)
+	{
+		vm_size_t got = size;
+		return vm_read_overwrite(mach_task_self(), static_cast<vm_address_t>(addr), size,
+				   reinterpret_cast<vm_address_t>(out), &got) == KERN_SUCCESS &&
+			   got == size;
+	}
+
+	// Prints " image+0xOFFSET(symbol)" for an address inside a loaded image, else " jit_or_unknown".
+	static void SafeWriteImageOffset(uintptr_t addr)
+	{
+		Dl_info dli;
+		if (addr && dladdr(reinterpret_cast<const void*>(addr), &dli) && dli.dli_fbase)
+		{
+			const char* name = dli.dli_fname ? dli.dli_fname : "?";
+			for (const char* p = name; *p; ++p)
+			{
+				if (*p == '/')
+					name = p + 1;
+			}
+			SafeWriteStr(" ");
+			SafeWriteStr(name);
+			SafeWriteField("+", addr - reinterpret_cast<uintptr_t>(dli.dli_fbase), 8);
+			if (dli.dli_sname)
+			{
+				SafeWriteStr("(");
+				SafeWriteStr(dli.dli_sname);
+				SafeWriteStr(")");
+			}
+		}
+		else
+		{
+			SafeWriteStr(" jit_or_unknown");
+		}
+	}
+
+	static const char* HPFPathName(u32 path)
+	{
+		switch (path)
+		{
+			case 1: return "fastmem_smc_write";
+			case 2: return "fastmem_backpatch_failed";
+			case 3: return "outside_fastmem_and_ee_ram";
+			case 4: return "ee_ram_smc_write";
+			default: return "not_reached";
+		}
+	}
+
+	static void LogUnrecoverableFault(int sig, const char* reason, uintptr_t pc, uintptr_t fault,
+		u32 esr, bool is_write, uintptr_t x25, uintptr_t x27, uintptr_t lr, uintptr_t sp, uintptr_t fp)
+	{
+		SafeWriteStr("\n@@FATAL_FAULT@@ sig=");
+		SafeWriteStr(sig == SIGBUS ? "SIGBUS" : sig == SIGSEGV ? "SIGSEGV" : sig == SIGILL ? "SIGILL" : "OTHER");
+		SafeWriteStr(" reason=");
+		SafeWriteStr(reason);
+		SafeWriteField(" pc=", pc, 12);
+		SafeWriteField(" fault=", fault, 12);
+		SafeWriteField(" esr=", esr, 8);
+		const u32 ec = (esr >> 26) & 0x3F;
+		SafeWriteStr((ec == 0x20 || ec == 0x21) ? " class=IFETCH" :
+					 (ec == 0x24 || ec == 0x25) ? " class=DATA" :
+												  " class=OTHER");
+		SafeWriteStr(is_write ? " access=write" : " access=read");
+		SafeWriteStr(" hpf=");
+		SafeWriteStr(HPFPathName(g_hpf_last_path.load(std::memory_order_relaxed)));
+		SafeWriteStr(g_hpf_last_fa.load(std::memory_order_relaxed) == fault ? " hpf_this_fault=1" : " hpf_this_fault=0");
+		if (x25 && fault >= x25 && (fault - x25) <= 0xFFFFFFFFull)
+			SafeWriteField(" guest_addr=", fault - x25, 8);
+		u32 ee_pc = 0;
+		if (x27 > 0x1000 && SafeReadMem(x27 + 0x2A8, &ee_pc, sizeof(ee_pc))) // cpuRegs.pc
+			SafeWriteField(" ee_pc=", ee_pc, 8);
+		SafeWriteField(" x25=", x25, 12);
+		SafeWriteField(" lr=", lr, 12);
+		SafeWriteField(" sp=", sp, 12);
+
+		SafeWriteStr("\n@@FATAL_FAULT_PC@@");
+		SafeWriteImageOffset(pc);
+		SafeWriteStr("\n@@FATAL_FAULT_LR@@");
+		SafeWriteImageOffset(lr);
+
+		// Instruction words around the faulting PC; the faulting one is in brackets.
+		SafeWriteStr("\n@@FATAL_FAULT_INSNS@@");
+		for (int i = -4; i <= 3; i++)
+		{
+			u32 word = 0;
+			char buf[12];
+			if (!SafeReadMem(pc + static_cast<intptr_t>(i) * 4, &word, sizeof(word)))
+				continue;
+			SafeHex(buf, word, 8);
+			SafeWriteStr(i == 0 ? " [" : " ");
+			SafeWriteStr(buf);
+			if (i == 0)
+				SafeWriteStr("]");
+		}
+
+		// Frame-pointer walk. Every read goes through the kernel, so a corrupt chain just ends
+		// the walk instead of faulting again inside the signal handler.
+		SafeWriteStr("\n@@FATAL_FAULT_STACK@@");
+		uintptr_t frame = fp;
+		for (int depth = 0; depth < 16 && frame && (frame & 0xF) == 0; depth++)
+		{
+			uintptr_t rec[2] = {0, 0}; // [0] = caller's frame pointer, [1] = return address
+			if (!SafeReadMem(frame, rec, sizeof(rec)) || rec[1] == 0)
+				break;
+			char d[4];
+			SafeHex(d, static_cast<u64>(depth), 2);
+			SafeWriteStr("\n  #");
+			SafeWriteStr(d);
+			SafeWriteField(" ", rec[1], 12);
+			SafeWriteImageOffset(rec[1]);
+			if (rec[0] <= frame)
+				break;
+			frame = rec[0];
+		}
+		SafeWriteStr("\n@@FATAL_FAULT_END@@\n");
+	}
 
 // [iPSX2] JIT Context State
 static std::atomic<uintptr_t> s_jit_base{0};
@@ -2133,21 +2287,26 @@ void PageFaultHandler::SignalHandler(int sig, siginfo_t* info, void* ctx)
 
 	// Prevent recursive exception filtering.
 	HandlerResult result = HandlerResult::ExecuteNextHandler;
+	const bool fault_was_recursive = s_in_exception_handler; // [iPSX2 #12] for the fatal report
 	if (!s_in_exception_handler)
 	{
 		s_in_exception_handler = true;
 		result = HandlePageFault(exception_pc, exception_address, is_write);
-		
+
 		// If page fault handled, we are good.
 		// If NOT handled (ExecuteNextHandler), and we are in JIT context, we should probably force exit
 		// because standard CrashHandler uses malloc/printf which will deadlock/corrupt.
 		if (result == HandlerResult::ExecuteNextHandler && HostSys::g_JitContext.block_id != 0)
 		{
              s_exception_handler_mutex.unlock();
+#if defined(_M_ARM64)
+             LogUnrecoverableFault(sig, "unresolved_in_jit_block", pc_val, fault_val, esr, is_write,
+                 reg_x25, reg_x27, host_lr, host_sp, ss->__fp);
+#endif
              SafeWriteStr("Unresolvable JIT Crash. Improved diagnosis above. Aborting safely.\n");
              abort(); // Better than hanging
 		}
-		
+
 		s_in_exception_handler = false;
 	}
 
@@ -2158,6 +2317,11 @@ void PageFaultHandler::SignalHandler(int sig, siginfo_t* info, void* ctx)
 		return;
 
 	// We couldn't handle it. Pass it off to the crash dumper.
+#if defined(_M_ARM64)
+	// [iPSX2 #12] Always leave a full report first (the verbose block above is capped at 3 SIGBUS).
+	LogUnrecoverableFault(sig, fault_was_recursive ? "fault_inside_fault_handler" : "unhandled_page_fault",
+		pc_val, fault_val, esr, is_write, reg_x25, reg_x27, host_lr, host_sp, ss->__fp);
+#endif
 	CrashHandler::CrashSignalHandler(sig, info, ctx);
 }
 
@@ -2233,7 +2397,10 @@ bool PageFaultHandler::Install_Fresh(Error* error)
     }
     // Redirect stderr → crash log so write(STDERR_FILENO,...) probes appear in log file
     if (s_crash_log_fd >= 0)
-        dup2(s_crash_log_fd, STDERR_FILENO);
+    {
+        if (s_crash_log_fd == STDERR_FILENO || dup2(s_crash_log_fd, STDERR_FILENO) >= 0)
+            s_crash_log_mirrors_stderr = true; // [iPSX2 #12] SafeWriteStr: write once, not twice
+    }
 
     // Log confirmation that signal handler is installed
     // Must be one-shot effectively since Install_Fresh is called once

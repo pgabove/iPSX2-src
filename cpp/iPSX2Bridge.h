@@ -129,4 +129,10 @@ typedef NS_ENUM(NSInteger, iPSX2PadButton) {
 + (int)getButtonMapping:(int)ps2Index;
 + (void)resetButtonMappings;
 
+// [iPSX2 #12] Safe-area insets (points) of the area the game view extends under (status bar,
+// window controls). The top on-screen stats are pushed clear of it.
++ (void)setOverlaySafeAreaTop:(CGFloat)top left:(CGFloat)left right:(CGFloat)right;
+// [iPSX2 #12] YES while SDL has a physical game controller open.
++ (BOOL)isGamepadConnected;
+
 @end

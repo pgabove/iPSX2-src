@@ -20,6 +20,13 @@ struct VirtualPadSettingsView: View {
                 Toggle("Haptic Feedback", isOn: $settings.hapticFeedback)
             }
 
+            // [iPSX2 #12]
+            Section {
+                Toggle("Hide When a Controller Is Connected", isOn: $settings.autoHidePadWithController)
+            } footer: {
+                Text("The touch controls disappear when you connect a game controller and come back when it disconnects. You can still show them from the ••• menu in a game.")
+            }
+
             Section("Layout") {
                 Button {
                     showLayoutEditor = true

@@ -22,6 +22,8 @@ struct RootView: View {
         }
         .onAppear { applyTheme(colorSchemeRaw) }
         .onChange(of: colorSchemeRaw) { _, newValue in applyTheme(newValue) }
+        // [iPSX2 #12] Hide/show the status bar and home indicator when entering/leaving a game.
+        .onChange(of: appState.currentScreen) { _, _ in SystemChrome.refresh() }
         .onOpenURL { url in
             fileImporter.handleURL(url)
         }

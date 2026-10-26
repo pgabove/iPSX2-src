@@ -17,6 +17,8 @@
 
 // ... other includes ...
 #include <unistd.h>
+#include <objc/runtime.h> // [iPSX2 #12] class_replaceMethod (status bar forwarding)
+#include <cmath>          // [iPSX2 #12] fabs (native scale check)
 #include <cstdlib>
 #include <string>
 #include <iostream>
@@ -75,12 +77,45 @@ static UITextView* g_logView = nil;
 #include "pcsx2/MTGS.h"
 extern void GSResizeDisplayWindow(int width, int height, float scale);
 
+// [iPSX2 #12] Safe-area insets (points) of the part of the window the game view extends under
+// (status bar, iPadOS window controls), set from GameScreenView. Kept in points and converted
+// with the game view's current pixel scale, so they stay correct when the scale changes.
+static CGFloat s_overlaySafeTop = 0, s_overlaySafeLeft = 0, s_overlaySafeRight = 0;
+static void iPSX2_ApplyOverlaySafeArea(CGFloat pixelScale)
+{
+    if (pixelScale <= 0)
+        pixelScale = 1;
+    ImGuiManager::SetOverlaySafeArea(static_cast<float>(s_overlaySafeTop * pixelScale),
+        static_cast<float>(s_overlaySafeLeft * pixelScale), static_cast<float>(s_overlaySafeRight * pixelScale));
+}
+
 @interface iPSX2GameView : UIView
+- (void)iPSX2_matchScreenScale;
 @end
 @implementation iPSX2GameView
 + (Class)layerClass { return [CAMetalLayer class]; }
+// [iPSX2 #12] UIKit gives views backed by a CAMetalLayer contentScaleFactor = 1.0, so the game was
+// drawn at point resolution (1408x970 on an iPad Pro M5) and then stretched by the system, which
+// made it soft. Match the screen's native pixel scale so frames are rendered at panel resolution.
+// Re-checked on every layout, so moving a window to another display picks up that display's scale.
+- (void)iPSX2_matchScreenScale {
+    UIScreen* screen = self.window.windowScene.screen;
+    CGFloat native = screen ? screen.nativeScale : 0.0;
+    if (native <= 0.0)
+        native = self.traitCollection.displayScale;
+    if (native > 0.0 && fabs(self.contentScaleFactor - native) > 0.001) {
+        self.contentScaleFactor = native;
+        self.layer.contentsScale = native;
+    }
+}
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    [self iPSX2_matchScreenScale];
+    [self setNeedsLayout];
+}
 - (void)layoutSubviews {
     [super layoutSubviews];
+    [self iPSX2_matchScreenScale];
     // Frame is set by SwiftUI — only update Metal drawable size
     CGFloat scale = self.contentScaleFactor;
     CAMetalLayer *mtl = (CAMetalLayer *)self.layer;
@@ -89,12 +124,22 @@ extern void GSResizeDisplayWindow(int width, int height, float scale);
     int w = (int)(self.bounds.size.width * scale);
     int h = (int)(self.bounds.size.height * scale);
     float s = (float)scale;
+    iPSX2_ApplyOverlaySafeArea(scale); // [iPSX2 #12] keep the OSD inset in sync with the pixel scale
     MTGS::RunOnGSThread([w, h, s]() {
         GSResizeDisplayWindow(w, h, s);
     });
 }
 @end
 iPSX2GameView* g_gameRenderView = nil;  // non-static: accessed from iPSX2Bridge.mm
+
+// [iPSX2 #12] Called (main thread) by iPSX2Bridge setOverlaySafeAreaTop:left:right:.
+extern "C" void iPSX2_SetOverlaySafeAreaPoints(CGFloat top, CGFloat left, CGFloat right)
+{
+    s_overlaySafeTop = top;
+    s_overlaySafeLeft = left;
+    s_overlaySafeRight = right;
+    iPSX2_ApplyOverlaySafeArea(g_gameRenderView ? g_gameRenderView.contentScaleFactor : 1.0);
+}
 
 // Touch pad state
 std::atomic<bool> g_touchPadState[64] = {};
@@ -402,6 +447,37 @@ int GamepadMapper::GetMapping(int ps2Index) {
 static UIViewController* __unsafe_unretained s_menuVC = nil;
 static UIViewController* __unsafe_unretained s_rootVC = nil;
 
+// [iPSX2 #12] Status bar / home indicator / screen-edge gestures.
+// UIKit only asks the window's root view controller (SDL's) for these. The SwiftUI host
+// (iPSX2HostingController) is a child of it, so its prefersStatusBarHidden was never consulted and
+// the status bar stayed on top of the game. Make SDL's controller hand these decisions to the child.
+// Done through the ObjC runtime so the vendored SDL source stays untouched.
+static UIViewController* iPSX2_SystemChromeChild(id self, SEL _cmd)
+{
+    return s_menuVC;
+}
+
+static void iPSX2_ForwardSystemChromeToChild(UIViewController* rootVC)
+{
+    Class cls = object_getClass(rootVC);
+    const char* types = "@@:";
+    class_replaceMethod(cls, @selector(childViewControllerForStatusBarHidden), (IMP)iPSX2_SystemChromeChild, types);
+    class_replaceMethod(cls, @selector(childViewControllerForHomeIndicatorAutoHidden), (IMP)iPSX2_SystemChromeChild, types);
+    class_replaceMethod(cls, @selector(childViewControllerForScreenEdgesDeferringSystemGestures), (IMP)iPSX2_SystemChromeChild, types);
+    [rootVC setNeedsStatusBarAppearanceUpdate];
+    [rootVC setNeedsUpdateOfHomeIndicatorAutoHidden];
+    [rootVC setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
+}
+
+// [iPSX2 #12] Tells GameScreenView a controller was opened/closed so it can hide or show the
+// touch controls. Posted on the main queue (the poll loop runs on the CPU thread).
+static void iPSX2_PostGamepadConnectionChanged()
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"iPSX2GamepadConnectionChanged" object:nil];
+    });
+}
+
 // Helper to log to screen (thread safe)
 void LogToScreen(const char* str) {
     if (!str) return;
@@ -499,6 +575,8 @@ namespace Host
 
 // Get render size from the actual render view
             UIView* renderView = (__bridge UIView*)wi.window_handle;
+            if ([renderView isKindOfClass:[iPSX2GameView class]])
+                [(iPSX2GameView*)renderView iPSX2_matchScreenScale]; // [iPSX2 #12] native pixels
             CGFloat scale = renderView.contentScaleFactor;
             wi.surface_width = static_cast<u32>(renderView.bounds.size.width * scale);
             wi.surface_height = static_cast<u32>(renderView.bounds.size.height * scale);
@@ -515,7 +593,9 @@ namespace Host
                 Console.WriteLn("Host::AcquireRenderWindow: View not yet laid out; using screen native bounds %ux%u",
                     wi.surface_width, wi.surface_height);
             }
-            wi.surface_scale = SDL_GetWindowDisplayScale(g_sdl_window);
+            // [iPSX2 #12] Same scale the drawable uses (layoutSubviews passes it to GSResizeDisplayWindow
+            // too), so the OSD keeps its physical size now that the drawable is in native pixels.
+            wi.surface_scale = static_cast<float>(scale);
             
             SDL_DisplayID display = SDL_GetDisplayForWindow(g_sdl_window);
             const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
@@ -630,7 +710,10 @@ namespace Host
                 if (ids && count > 0) {
                     s_gamepad = SDL_OpenGamepad(ids[0]);
                     if (s_gamepad)
+                    {
                         Console.WriteLn("[Files] MFi gamepad connected: %s", SDL_GetGamepadName(s_gamepad));
+                        iPSX2_PostGamepadConnectionChanged(); // [iPSX2 #12]
+                    }
                 }
                 SDL_free(ids);
             }
@@ -639,6 +722,7 @@ namespace Host
                 Console.WriteLn("[Files] MFi gamepad disconnected");
                 SDL_CloseGamepad(s_gamepad);
                 s_gamepad = nullptr;
+                iPSX2_PostGamepadConnectionChanged(); // [iPSX2 #12]
             }
             if (s_gamepad) {
                 SDL_UpdateGamepads();
@@ -1009,6 +1093,7 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
             [menuVC didMoveToParentViewController:rootVC];
             s_menuVC = menuVC;
             s_rootVC = rootVC;
+            iPSX2_ForwardSystemChromeToChild(rootVC); // [iPSX2 #12] status bar follows the game screen
 
             if (g_logView) {
                 g_logView.hidden = YES;
@@ -1596,7 +1681,17 @@ INISettingsInterface* g_p44_settings_interface = nullptr;
     // --- Unified Logging Redirection ---
     // Force stderr and stdout to pcsx2_log.txt
     std::string logPath = dataRoot + "/pcsx2_log.txt";
-    
+
+    // [iPSX2 #12] Keep the previous two sessions' logs. "w" below wipes pcsx2_log.txt, and
+    // reopening iPSX2 after a crash (needed to turn JIT back on) used to destroy the crash log.
+    // Now the crashed session is pcsx2_log.prev.txt (or pcsx2_log.prev2.txt after two reopens).
+    {
+        const std::string prevPath = dataRoot + "/pcsx2_log.prev.txt";
+        const std::string prev2Path = dataRoot + "/pcsx2_log.prev2.txt";
+        rename(prevPath.c_str(), prev2Path.c_str()); // fails harmlessly when there is no file yet
+        rename(logPath.c_str(), prevPath.c_str());
+    }
+
     // Redirect stderr to file
     if (freopen(logPath.c_str(), "w", stderr) == NULL) { // "w" clears old logs
         printf("Reopen stderr failed\n");

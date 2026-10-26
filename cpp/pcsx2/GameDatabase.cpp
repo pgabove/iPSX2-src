@@ -191,6 +191,14 @@ void GameDatabase::parseAndInsert(const std::string_view serial, const c4::yml::
 		}
 	}
 
+	// [iPSX2] Per-game fastmem opt-out.
+	if (node.has_child("disableFastmem"))
+	{
+		int val = 0;
+		node["disableFastmem"] >> val;
+		gameEntry.disableFastmem = (val != 0);
+	}
+
 	// Validate game fixes, invalid ones will be dropped!
 	if (node.has_child("gameFixes") && node["gameFixes"].has_children())
 	{
@@ -443,6 +451,15 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(Pcsx2Config& config, bool app
 	// Only apply core game fixes if the user has enabled them.
 	if (!applyAuto)
 		Console.Warning("GameDB: Game Fixes are disabled");
+
+	// [iPSX2] Applied regardless of applyAuto: this avoids a hard crash, it is not an accuracy tweak.
+	// CHECK_FASTMEM is evaluated when blocks are compiled, and the EE recompiler is reset after
+	// game settings are applied at boot, so no fastmem load/store is emitted for this game.
+	if (disableFastmem)
+	{
+		Console.WriteLn("GameDB: Disabling fast memory access (fastmem) for this game");
+		config.Cpu.Recompiler.EnableFastmem = false;
+	}
 
 	if (eeRoundMode < FPRoundMode::MaxCount)
 	{
