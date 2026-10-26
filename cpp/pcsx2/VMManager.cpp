@@ -41,6 +41,7 @@
 #include "SPU2/spu2.h"
 #include "USB/USB.h"
 #include "Vif_Dynarec.h"
+#include "iPSX2Diagnostics.h"
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
@@ -952,6 +953,26 @@ void VMManager::SetDefaultSettings(
 		Host::SetDefaultUISettings(si);
 }
 
+// [iPSX2 #16] Settings > Emulator > Diagnostics (INI section iPSX2/Debug). The recompilers read
+// these while compiling, so they take full effect from the next boot.
+static void iPSX2_LoadDiagnosticSettings(SettingsInterface& si)
+{
+	static const char* const mode_names[3] = {"JIT", "Interpreter", "Check"};
+	const int cop2 = std::clamp(si.GetIntValue("iPSX2/Debug", "COP2MacroMode", 0), 0, 2);
+	const int vif = std::clamp(si.GetIntValue("iPSX2/Debug", "VIFUnpackMode", 0), 0, 2);
+
+	// Check mode compares every macro op's flags with the interpreter's, so every op must compute
+	// them (and the status flag in memory must stay normalized between ops).
+	if (cop2 == 2)
+		EmuConfig.Speedhacks.vuFlagHack = false;
+
+	g_iPSX2_COP2MacroMode = cop2;
+	g_iPSX2_VIFUnpackMode = vif;
+	Console.WriteLn("@@DIAG@@ VU0 macro ops=%s, VIF unpacks=%s, mVU flag hack=%d, EE core=%s",
+		mode_names[cop2], mode_names[vif], EmuConfig.Speedhacks.vuFlagHack ? 1 : 0,
+		EmuConfig.Cpu.CoreType == 1 ? "Interpreter" : "JIT");
+}
+
 void VMManager::LoadSettings()
 {
 	// Switch the rounding mode back to the system default for loading settings.
@@ -962,6 +983,7 @@ void VMManager::LoadSettings()
 	std::unique_lock<std::mutex> lock = Host::GetSettingsLock();
 	SettingsInterface* si = Host::GetSettingsInterface();
 	LoadCoreSettings(*si);
+	iPSX2_LoadDiagnosticSettings(*si);
 	Pad::LoadConfig(*si);
 	Host::LoadSettings(*si, lock);
 	InputManager::ReloadSources(*si, lock);
@@ -1115,6 +1137,7 @@ void VMManager::ApplyCoreSettings()
 		FPControlRegisterBackup fpcr_backup(FPControlRegister::GetDefault());
 		std::unique_lock<std::mutex> lock = Host::GetSettingsLock();
 		LoadCoreSettings(*Host::GetSettingsInterface());
+		iPSX2_LoadDiagnosticSettings(*Host::GetSettingsInterface()); // [iPSX2 #16] keep the check-mode flag hack override
 		WarnAboutUnsafeSettings();
 		ApplyGameFixes();
 	}

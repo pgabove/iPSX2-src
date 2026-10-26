@@ -8,6 +8,10 @@
 #include "common/Perf.h"
 #include "common/StringUtil.h"
 
+#include "iPSX2Diagnostics.h"
+
+#include <cstring>
+
 namespace a64 = vixl::aarch64;
 
 static void mVUmergeRegs(const vixl::aarch64::VRegister& dest, const vixl::aarch64::VRegister& src, int xyzw, bool modXYZW = false, bool canModifySrc = false)
@@ -497,6 +501,142 @@ _vifT __fi nVifBlock* dVifCompile(nVifBlock& block, bool isFill)
 	return &block;
 }
 
+// ----------------------------------------------------------------------------
+// [iPSX2 #16] VIF unpack check (Settings > Emulator > Diagnostics > "VIF Unpacks" = Check)
+// ----------------------------------------------------------------------------
+// Runs the recompiled unpack into a copy of the destination, then the C unpackers into VU memory,
+// compares the two and keeps the C result. Logs @@VIF_CHECK@@ lines.
+
+namespace
+{
+	struct VifCheckStats
+	{
+		u64 checks = 0;
+		u64 mismatches = 0;
+		u64 w_only = 0; // V2/V3 differing only in W: the C unpackers don't model the W quirks
+		u64 next_report = 1u << 12;
+		u32 logged = 0;
+		u32 per_type_checks[64][4] = {}; // [usn:mask:upk][mode]
+		u32 per_type_bad[64][4] = {};
+	};
+} // namespace
+
+static VifCheckStats s_vif_check;
+alignas(16) static u8 s_vif_check_buf[0x4000];
+
+static const char* iPSX2_VifUnpackName(u32 upk)
+{
+	static const char* const names[16] = {"S-32", "S-16", "S-8", "?3", "V2-32", "V2-16", "V2-8", "?7",
+		"V3-32", "V3-16", "V3-8", "?11", "V4-32", "V4-16", "V4-8", "V4-5"};
+	return names[upk & 0xf];
+}
+
+static void iPSX2_VifCheckLog16(const char* label, const u8* p)
+{
+	u32 w[4];
+	std::memcpy(w, p, sizeof(w));
+	Console.WriteLn("@@VIF_CHECK@@   %-6s %08X %08X %08X %08X", label, w[0], w[1], w[2], w[3]);
+}
+
+static void iPSX2_VifCheckReport()
+{
+	Console.WriteLn("@@VIF_CHECK@@ summary: %llu unpacks checked, %llu mismatched, %llu V2/V3 W-only differences",
+		static_cast<unsigned long long>(s_vif_check.checks), static_cast<unsigned long long>(s_vif_check.mismatches),
+		static_cast<unsigned long long>(s_vif_check.w_only));
+	for (u32 t = 0; t < 64; t++)
+	{
+		for (u32 m = 0; m < 4; m++)
+		{
+			if (!s_vif_check.per_type_checks[t][m])
+				continue;
+			Console.WriteLn("@@VIF_CHECK@@   %s%s%s mode=%u: %u checked, %u bad", iPSX2_VifUnpackName(t),
+				(t & 0x10) ? " masked" : "", (t & 0x20) ? " unsigned" : "", m, s_vif_check.per_type_checks[t][m],
+				s_vif_check.per_type_bad[t][m]);
+		}
+	}
+}
+
+_vifT static void iPSX2_VifCheckUnpack(const nVifBlock& b, u8* startmem, const u8* data, bool isFill)
+{
+	vifStruct& vif = MTVU_VifX;
+	VIFregisters& vifRegs = MTVU_VifXRegs;
+	const u32 len = std::min<u32>(b.length, sizeof(s_vif_check_buf));
+	const u32 addr = vif.tag.addr;
+	const u32 num = vifRegs.num;
+	const u32 mode = vifRegs.mode & 3;
+	const u32 upk = b.upkType & 0x3f;
+
+	// Recompiled unpack into a copy of the destination, from the current row register.
+	std::memcpy(s_vif_check_buf, startmem, len);
+	const u128 row_before = vif.MaskRow;
+	((nVifrecCall)b.startPtr)((uptr)s_vif_check_buf, (uptr)data);
+	const u128 row_jit = vif.MaskRow;
+	vif.MaskRow = row_before;
+
+	// C unpackers into VU memory; this is the result that's kept.
+	_nVifUnpack(idx, data, vifRegs.mode, isFill);
+
+	s_vif_check.checks++;
+	s_vif_check.per_type_checks[upk][mode]++;
+
+	const u32 upk_num = upk & 0xf;
+	const bool w_quirk_type = (upk_num >= 4 && upk_num <= 10); // V2-x, V3-x
+	u32 first_bad = len;
+	bool w_only_seen = false;
+	for (u32 off = 0; off + 16 <= len; off += 16)
+	{
+		if (std::memcmp(s_vif_check_buf + off, startmem + off, 16) == 0)
+			continue;
+		const bool xyz_same = std::memcmp(s_vif_check_buf + off, startmem + off, 12) == 0;
+		if (w_quirk_type && xyz_same)
+		{
+			w_only_seen = true;
+			continue;
+		}
+		first_bad = off;
+		break;
+	}
+	const bool row_bad = std::memcmp(&row_jit, &vif.MaskRow, sizeof(u128)) != 0 && mode >= 2;
+
+	if (w_only_seen && first_bad == len && !row_bad)
+		s_vif_check.w_only++;
+
+	if (first_bad != len || row_bad)
+	{
+		s_vif_check.mismatches++;
+		s_vif_check.per_type_bad[upk][mode]++;
+		if (s_vif_check.logged < 40)
+		{
+			s_vif_check.logged++;
+			Console.WriteLn("@@VIF_CHECK@@ MISMATCH #%u VIF%d %s%s%s mode=%u mask=%08X cl=%u wl=%u num=%u addr=%04X "
+							"aligned=%u fill=%d len=%u first=+%u%s",
+				s_vif_check.logged, idx, iPSX2_VifUnpackName(upk), (upk & 0x10) ? " masked" : "",
+				(upk & 0x20) ? " unsigned" : "", mode, b.mask, b.cl, b.wl, num, addr, b.aligned, isFill ? 1 : 0, len,
+				first_bad, row_bad ? " ROW" : "");
+			if (first_bad != len)
+			{
+				iPSX2_VifCheckLog16("jit", s_vif_check_buf + first_bad);
+				iPSX2_VifCheckLog16("interp", startmem + first_bad);
+			}
+			iPSX2_VifCheckLog16("src", data);
+			iPSX2_VifCheckLog16("src+16", data + 16);
+			iPSX2_VifCheckLog16("row", reinterpret_cast<const u8*>(&row_before));
+			if (row_bad)
+			{
+				iPSX2_VifCheckLog16("rowjit", reinterpret_cast<const u8*>(&row_jit));
+				iPSX2_VifCheckLog16("rowint", reinterpret_cast<const u8*>(&vif.MaskRow));
+			}
+		}
+	}
+
+	if (s_vif_check.checks >= s_vif_check.next_report)
+	{
+		iPSX2_VifCheckReport();
+		s_vif_check.next_report = (s_vif_check.next_report < (1u << 20)) ? (s_vif_check.next_report << 2) :
+																			  (s_vif_check.next_report + (1u << 20));
+	}
+}
+
 _vifT __fi void dVifUnpack(const u8* data, bool isFill)
 {
 	nVifStruct& v = nVif[idx];
@@ -552,7 +692,10 @@ _vifT __fi void dVifUnpack(const u8* data, bool isFill)
 		{
 #if 1
 			// No wrapping, you can run the fast dynarec
-			((nVifrecCall)b->startPtr)((uptr)startmem, (uptr)data);
+			if (g_iPSX2_VIFUnpackMode == 2) [[unlikely]]
+				iPSX2_VifCheckUnpack<idx>(*b, startmem, data, isFill);
+			else
+				((nVifrecCall)b->startPtr)((uptr)startmem, (uptr)data);
 #else
 			// comparison mode
 			static u8 tmpbuf[512 * 1024];

@@ -409,7 +409,10 @@ public:
 				}
 			}
 
-			for (i = 0; i < gprTotal; ++i)
+			// [iPSX2 #16] x86regs[] has iREGCNT_GPR (5) EE allocator slots on iOS, while gprTotal is 25.
+			// Walking all 25 read past the array (into s_saveX86regs and beyond), which could seed
+			// gprMap with stale "cached" VI registers and clear random needed flags.
+			for (i = 0; i < std::min<int>(gprTotal, static_cast<int>(iREGCNT_GPR)); ++i)
 			{
 				if (!x86regs[i].inuse || x86regs[i].type != X86TYPE_VIREG)
 					continue;
@@ -936,7 +939,7 @@ public:
 	{
 		microMapGPR& clear = gprMap[regId];
 
-		if (regAllocCOP2)
+		if (regAllocCOP2 && regId < static_cast<int>(iREGCNT_GPR)) // [iPSX2 #16] x86regs[] bound
 		{
 			if (x86regs[regId].inuse && x86regs[regId].type == X86TYPE_VIREG)
 			{
@@ -964,6 +967,8 @@ public:
 			return;
 
 		const u32 rn = reg.GetCode();
+		if (rn >= iREGCNT_GPR) // [iPSX2 #16] x86regs[] bound
+			return;
 		const bool dirty = (gprMap[rn].VIreg >= 0 && gprMap[rn].dirty);
 		pxAssert(x86regs[rn].type == X86TYPE_VIREG);
 		x86regs[rn].reg = gprMap[rn].VIreg;
@@ -999,7 +1004,7 @@ public:
 		pxAssert(reg_code < gprTotal);
 		microMapGPR& clear = gprMap[reg_code];
 		clear.isNeeded = false;
-		if (regAllocCOP2)
+		if (regAllocCOP2 && reg_code < iREGCNT_GPR) // [iPSX2 #16] x86regs[] bound
 			x86regs[reg_code].needed = false;
 	}
 
@@ -1021,7 +1026,7 @@ public:
 				if (mapI.isNeeded)
 				{
 					MVURALOG("  unbind %d to %d for write\n", i, reg);
-					if (regAllocCOP2)
+					if (regAllocCOP2 && i < static_cast<int>(iREGCNT_GPR)) // [iPSX2 #16] x86regs[] bound
 					{
 						pxAssert(x86regs[i].type == X86TYPE_VIREG && x86regs[i].reg == static_cast<u8>(mapI.VIreg));
 						x86regs[i].reg = -1;
@@ -1143,7 +1148,7 @@ public:
 					if (backup)
 						writeVIBackup(armWRegister(i));
 
-					if (regAllocCOP2)
+					if (regAllocCOP2 && i < static_cast<int>(iREGCNT_GPR)) // [iPSX2 #16] x86regs[] bound
 					{
 						pxAssert(x86regs[i].inuse && x86regs[i].type == X86TYPE_VIREG);
 						x86regs[i].reg = gprMap[i].VIreg;
@@ -1207,7 +1212,7 @@ public:
 		gprMap[x].count = this_counter;
 		gprMap[x].isNeeded = true;
 
-		if (regAllocCOP2)
+		if (regAllocCOP2 && x < static_cast<int>(iREGCNT_GPR)) // [iPSX2 #16] x86regs[] bound
 		{
 			pxAssert(x86regs[x].inuse && x86regs[x].type == X86TYPE_VIREG);
 			x86regs[x].reg = gprMap[x].VIreg;

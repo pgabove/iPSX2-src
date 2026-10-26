@@ -128,9 +128,296 @@ bool mVUIsReservedCOP2(int hostreg)
 	return (hostreg == gprT1.GetCode() || hostreg == gprT2.GetCode() || hostreg == gprF0.GetCode());
 }
 
-#define REC_COP2_mVU0(f, opName, mode) \
+//------------------------------------------------------------------
+// [iPSX2 #16] VU0 macro-op diagnostics
+//------------------------------------------------------------------
+// Set at boot from Settings > Emulator > Diagnostics > "VU0 Macro Ops" (VMManager::LoadSettings):
+//   0  JIT          microVU code (normal)
+//   1  Interpreter  every op below calls its interpreter function instead
+//   2  Check        run the microVU code, rerun the op on the interpreter from the same starting
+//                   state, log any difference (@@COP2_CHECK@@ lines) and keep the interpreter's
+//                   result. Slow. VMManager also turns the mVU flag hack off in this mode, so
+//                   every op computes its flags and the status flag in memory stays normalized.
+int g_iPSX2_COP2MacroMode = 0;
+
+// The interpreter's CLIP shifts its own copy of the clip flag; the recompiled ops and CTC2 keep the
+// architectural one in VI[REG_CLIP_FLAG], so sync it first.
+static void iPSX2_VCLIPw()
+{
+	VURegs& vu = g_cpuRegistersPack.vuRegs[0];
+	vu.clipflag = vu.VI[REG_CLIP_FLAG].UL;
+	VCLIPw();
+}
+
+namespace
+{
+	struct COP2CheckStat
+	{
+		const char* name;
+		u64 checks;
+		u64 mismatches;
+	};
+} // namespace
+
+static VURegs s_cop2_before;
+static VURegs s_cop2_jit;
+static COP2CheckStat s_cop2_stats[160];
+static u32 s_cop2_stat_count = 0;
+static u64 s_cop2_checks = 0;
+static u64 s_cop2_mismatches = 0;
+static u64 s_cop2_next_report = 1u << 16;
+static u32 s_cop2_logged = 0;
+static constexpr u32 COP2_CHECK_DETAIL_LIMIT = 60;
+
+static COP2CheckStat& iPSX2_COP2CheckStatFor(const char* name)
+{
+	for (u32 i = 0; i < s_cop2_stat_count; i++)
+	{
+		if (s_cop2_stats[i].name == name)
+			return s_cop2_stats[i];
+	}
+	if (s_cop2_stat_count < std::size(s_cop2_stats))
+	{
+		s_cop2_stats[s_cop2_stat_count] = {name, 0, 0};
+		return s_cop2_stats[s_cop2_stat_count++];
+	}
+	return s_cop2_stats[std::size(s_cop2_stats) - 1];
+}
+
+// Two VU results agree when they are equal, both zero/denormal, both in the clamp range with the
+// same sign, or within a few ULP / a small relative error (a fused vs. separate multiply-add can
+// change the low bits).
+static bool iPSX2_COP2FloatClose(u32 a, u32 b)
+{
+	if (a == b)
+		return true;
+	const u32 ea = (a >> 23) & 0xff;
+	const u32 eb = (b >> 23) & 0xff;
+	if (ea == 0 && eb == 0)
+		return true;
+	const bool same_sign = ((a ^ b) & 0x80000000u) == 0;
+	if (ea >= 0xfe && eb >= 0xfe)
+		return same_sign;
+	if (ea == 0xff || eb == 0xff)
+		return false;
+	if (same_sign)
+	{
+		const s64 ulps = static_cast<s64>(a & 0x7fffffffu) - static_cast<s64>(b & 0x7fffffffu);
+		if (ulps >= -4 && ulps <= 4)
+			return true;
+	}
+	float fa, fb;
+	std::memcpy(&fa, &a, sizeof(fa));
+	std::memcpy(&fb, &b, sizeof(fb));
+	const float scale = std::max(1.0f, std::max(std::fabs(fa), std::fabs(fb)));
+	return std::fabs(fa - fb) <= scale * (1.0f / 65536.0f);
+}
+
+static void iPSX2_COP2CheckLogVec(const char* label, const u32* v)
+{
+	float f[4];
+	std::memcpy(f, v, sizeof(f));
+	Console.WriteLn("@@COP2_CHECK@@   %-9s %08X %08X %08X %08X  (%g, %g, %g, %g)", label, v[0], v[1], v[2], v[3],
+		f[0], f[1], f[2], f[3]);
+}
+
+static void iPSX2_COP2CheckReport()
+{
+	Console.WriteLn("@@COP2_CHECK@@ summary: %llu macro ops checked, %llu mismatched",
+		static_cast<unsigned long long>(s_cop2_checks), static_cast<unsigned long long>(s_cop2_mismatches));
+	char line[256];
+	size_t used = 0;
+	line[0] = 0;
+	for (u32 i = 0; i < s_cop2_stat_count; i++)
+	{
+		const COP2CheckStat& st = s_cop2_stats[i];
+		char item[64];
+		if (st.mismatches)
+			std::snprintf(item, sizeof(item), " %s=%llu(BAD %llu)", st.name, static_cast<unsigned long long>(st.checks),
+				static_cast<unsigned long long>(st.mismatches));
+		else
+			std::snprintf(item, sizeof(item), " %s=%llu", st.name, static_cast<unsigned long long>(st.checks));
+		const size_t len = std::strlen(item);
+		if (used + len >= sizeof(line))
+		{
+			Console.WriteLn("@@COP2_CHECK@@ %s", line);
+			used = 0;
+			line[0] = 0;
+		}
+		std::memcpy(line + used, item, len + 1);
+		used += len;
+	}
+	if (used)
+		Console.WriteLn("@@COP2_CHECK@@ %s", line);
+}
+
+static void iPSX2_COP2CheckSnapshot()
+{
+	s_cop2_before = g_cpuRegistersPack.vuRegs[0];
+}
+
+static void iPSX2_COP2CheckCompare(u32 code, void (*interp)(), const char* name, u32 pc)
+{
+	VURegs& vu = g_cpuRegistersPack.vuRegs[0];
+
+	// Keep what the microVU code produced, then rerun the op on the interpreter from the same state.
+	s_cop2_jit = vu;
+	vu = s_cop2_before;
+	vu.clipflag = vu.VI[REG_CLIP_FLAG].UL;
+	vu.macflag = vu.VI[REG_MAC_FLAG].UL;
+	vu.statusflag = vu.VI[REG_STATUS_FLAG].UL;
+	const u32 saved_code = cpuRegs.code;
+	cpuRegs.code = code;
+	interp();
+	cpuRegs.code = saved_code;
+
+	COP2CheckStat& stat = iPSX2_COP2CheckStatFor(name);
+	stat.checks++;
+	s_cop2_checks++;
+
+	// Status: Z/S (+ sticky) for FMAC ops, I/D (+ sticky) for the FDIV ops. The interpreter also
+	// computes O/U, which microVU doesn't, and clears I/D on FMAC ops, so those bits are skipped.
+	const bool is_fdiv = (std::strcmp(name, "DIV") == 0 || std::strcmp(name, "SQRT") == 0 || std::strcmp(name, "RSQRT") == 0);
+	const u32 status_mask = is_fdiv ? 0xC30u : 0xC3u;
+
+	int diffs = 0;
+	char first[16] = "";
+	const u32* first_jit = nullptr;
+	const u32* first_int = nullptr;
+	int first_words = 0;
+	const auto mark = [&](const char* label, const u32* jit_v, const u32* int_v, int words) {
+		if (diffs++ == 0)
+		{
+			std::snprintf(first, sizeof(first), "%s", label);
+			first_jit = jit_v;
+			first_int = int_v;
+			first_words = words;
+		}
+	};
+
+	char label[16];
+	for (int r = 1; r < 32; r++)
+	{
+		for (int l = 0; l < 4; l++)
+		{
+			if (!iPSX2_COP2FloatClose(s_cop2_jit.VF[r].UL[l], vu.VF[r].UL[l]))
+			{
+				std::snprintf(label, sizeof(label), "vf%02d", r);
+				mark(label, s_cop2_jit.VF[r].UL, vu.VF[r].UL, 4);
+				break;
+			}
+		}
+	}
+	for (int l = 0; l < 4; l++)
+	{
+		if (!iPSX2_COP2FloatClose(s_cop2_jit.ACC.UL[l], vu.ACC.UL[l]))
+		{
+			mark("acc", s_cop2_jit.ACC.UL, vu.ACC.UL, 4);
+			break;
+		}
+	}
+	for (int r = 1; r < 16; r++)
+	{
+		if ((s_cop2_jit.VI[r].UL & 0xFFFFu) != (vu.VI[r].UL & 0xFFFFu))
+		{
+			std::snprintf(label, sizeof(label), "vi%02d", r);
+			mark(label, &s_cop2_jit.VI[r].UL, &vu.VI[r].UL, 1);
+		}
+	}
+	if (!iPSX2_COP2FloatClose(s_cop2_jit.VI[REG_Q].UL, vu.VI[REG_Q].UL))
+		mark("Q", &s_cop2_jit.VI[REG_Q].UL, &vu.VI[REG_Q].UL, 1);
+	if (s_cop2_jit.VI[REG_R].UL != vu.VI[REG_R].UL)
+		mark("R", &s_cop2_jit.VI[REG_R].UL, &vu.VI[REG_R].UL, 1);
+	if ((s_cop2_jit.VI[REG_MAC_FLAG].UL ^ vu.VI[REG_MAC_FLAG].UL) & 0xFFu)
+		mark("MAC", &s_cop2_jit.VI[REG_MAC_FLAG].UL, &vu.VI[REG_MAC_FLAG].UL, 1);
+	if ((s_cop2_jit.VI[REG_STATUS_FLAG].UL ^ vu.VI[REG_STATUS_FLAG].UL) & status_mask)
+		mark("STATUS", &s_cop2_jit.VI[REG_STATUS_FLAG].UL, &vu.VI[REG_STATUS_FLAG].UL, 1);
+	if ((s_cop2_jit.VI[REG_CLIP_FLAG].UL ^ vu.VI[REG_CLIP_FLAG].UL) & 0xFFFFFFu)
+		mark("CLIP", &s_cop2_jit.VI[REG_CLIP_FLAG].UL, &vu.VI[REG_CLIP_FLAG].UL, 1);
+
+	if (diffs != 0)
+	{
+		stat.mismatches++;
+		s_cop2_mismatches++;
+		if (s_cop2_logged < COP2_CHECK_DETAIL_LIMIT)
+		{
+			s_cop2_logged++;
+			std::string disasm;
+			R5900::disR5900Fasm(disasm, code, pc, false);
+			Console.WriteLn("@@COP2_CHECK@@ MISMATCH #%u pc=%08X %08X %s [%s] first=%s (%d differ)",
+				s_cop2_logged, pc, code, disasm.c_str(), name, first, diffs);
+			const u32 fs = (code >> 11) & 0x1f;
+			const u32 ft = (code >> 16) & 0x1f;
+			char lbl[16];
+			std::snprintf(lbl, sizeof(lbl), "in vf%02u", fs);
+			iPSX2_COP2CheckLogVec(lbl, s_cop2_before.VF[fs].UL);
+			std::snprintf(lbl, sizeof(lbl), "in vf%02u", ft);
+			iPSX2_COP2CheckLogVec(lbl, s_cop2_before.VF[ft].UL);
+			iPSX2_COP2CheckLogVec("in acc", s_cop2_before.ACC.UL);
+			Console.WriteLn("@@COP2_CHECK@@   in Q=%08X I=%08X status=%08X mac=%08X clip=%08X",
+				s_cop2_before.VI[REG_Q].UL, s_cop2_before.VI[REG_I].UL, s_cop2_before.VI[REG_STATUS_FLAG].UL,
+				s_cop2_before.VI[REG_MAC_FLAG].UL, s_cop2_before.VI[REG_CLIP_FLAG].UL);
+			if (first_words == 4)
+			{
+				iPSX2_COP2CheckLogVec("jit", first_jit);
+				iPSX2_COP2CheckLogVec("interp", first_int);
+			}
+			else if (first_words == 1)
+			{
+				Console.WriteLn("@@COP2_CHECK@@   jit=%08X interp=%08X", *first_jit, *first_int);
+			}
+		}
+	}
+
+	// The interpreter's result stays in VU0, so the next op starts from correct state.
+
+	if (s_cop2_checks >= s_cop2_next_report)
+	{
+		iPSX2_COP2CheckReport();
+		s_cop2_next_report = (s_cop2_next_report < (1u << 22)) ? (s_cop2_next_report << 2) : (s_cop2_next_report + (1u << 22));
+	}
+}
+
+// Calls `interp` from recompiled code, with VU0 state written back to memory first (as
+// INTERPRETATE_COP2_FUNC does).
+static void recInterpretCOP2(void (*interp)())
+{
+	iFlushCall(FLUSH_FOR_POSSIBLE_MICRO_EXEC);
+	armAdd(PTR_CPU(cpuRegs.cycle), scaleblockcycles_clear());
+	recCall(interp);
+}
+
+// Check mode, before the op: write back and drop every cached VU0 register so memory holds the
+// op's inputs, and snapshot VU0.
+static void recCOP2CheckBegin()
+{
+	iFlushCall(FLUSH_FOR_POSSIBLE_MICRO_EXEC);
+	armEmitCall(reinterpret_cast<const void*>(iPSX2_COP2CheckSnapshot));
+}
+
+// Check mode, after the op: write its results back to memory, then compare against the interpreter.
+static void recCOP2CheckEnd(void (*interp)(), const char* name)
+{
+	iFlushCall(FLUSH_FOR_POSSIBLE_MICRO_EXEC);
+	const u32 op_pc = g_recompilingDelaySlot ? pc : (pc - 4);
+	armAsm->Mov(a64::w0, static_cast<u32>(cpuRegs.code));
+	armMoveAddressToReg(a64::x1, reinterpret_cast<const void*>(interp));
+	armMoveAddressToReg(a64::x2, name);
+	armAsm->Mov(a64::w3, op_pc);
+	armEmitCall(reinterpret_cast<const void*>(iPSX2_COP2CheckCompare));
+}
+
+#define REC_COP2_mVU0_INTERP(f, interp, opName, mode) \
 	void recV##f() \
 	{ \
+		if (g_iPSX2_COP2MacroMode == 1) \
+		{ \
+			recInterpretCOP2(interp); \
+			return; \
+		} \
+		const bool check = (g_iPSX2_COP2MacroMode == 2); \
+		if (check) \
+			recCOP2CheckBegin(); \
 		int _mode = (mode); \
 		setupMacroOp(_mode, opName); \
 		if (_mode & 4) \
@@ -146,7 +433,11 @@ bool mVUIsReservedCOP2(int hostreg)
 			mVU_##f(microVU0, 1); \
 		} \
 		endMacroOp(_mode); \
+		if (check) \
+			recCOP2CheckEnd(interp, opName); \
 	}
+
+#define REC_COP2_mVU0(f, opName, mode) REC_COP2_mVU0_INTERP(f, V##f, opName, mode)
 
 #define INTERPRETATE_COP2_FUNC(f) \
 	void recV##f() \
@@ -266,7 +557,7 @@ REC_COP2_mVU0(MSUBAz, "MSUBAz", 0x110);
 REC_COP2_mVU0(MSUBAw, "MSUBAw", 0x110);
 REC_COP2_mVU0(OPMULA, "OPMULA", 0x110);
 REC_COP2_mVU0(OPMSUB, "OPMSUB", 0x110);
-REC_COP2_mVU0(CLIP,   "CLIP",   0x108);
+REC_COP2_mVU0_INTERP(CLIP, iPSX2_VCLIPw, "CLIP", 0x108); // the interpreter function is VCLIPw
 
 //------------------------------------------------------------------
 // Macro VU - Redirect Lower Instructions
@@ -285,12 +576,17 @@ INTERPRETATE_COP2_FUNC(IOR);
 INTERPRETATE_COP2_FUNC(ISUB); // [D4-BUG-D002] see IADD comment above
 INTERPRETATE_COP2_FUNC(ILWR); // [D4-BUG-D002] VILWR JIT may corrupt VI values
 INTERPRETATE_COP2_FUNC(ISWR); // [D4-BUG-D002] paired with ILWR fallback
-REC_COP2_mVU0(LQI,   "LQI",   0x104);
-REC_COP2_mVU0(LQD,   "LQD",   0x104);
-REC_COP2_mVU0(SQI,   "SQI",   0x100);
-REC_COP2_mVU0(SQD,   "SQD",   0x100);
-REC_COP2_mVU0(MFIR,  "MFIR",  0x104);
-REC_COP2_mVU0(MTIR,  "MTIR",  0x104);
+// [iPSX2 #16] Every macro op that reads or writes a VI register through microVU's allocator runs on
+// the interpreter. In COP2 mode that allocator borrows EE allocator slots (x86regs[], 5 on iOS),
+// but emits code with register number = slot (w0-w4) while the EE side keeps slot N in
+// HostGprPhys(N) (x19-x24). VI values written here were later stored back from the wrong register
+// and values cached by CFC2 were read from the wrong one. Same cause as D4-BUG-D002 above.
+INTERPRETATE_COP2_FUNC(LQI);
+INTERPRETATE_COP2_FUNC(LQD);
+INTERPRETATE_COP2_FUNC(SQI);
+INTERPRETATE_COP2_FUNC(SQD);
+INTERPRETATE_COP2_FUNC(MFIR);
+INTERPRETATE_COP2_FUNC(MTIR);
 REC_COP2_mVU0(MOVE,  "MOVE",  0x0);
 REC_COP2_mVU0(MR32,  "MR32",  0x0);
 REC_COP2_mVU0(RINIT, "RINIT", 0x100);

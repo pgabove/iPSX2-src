@@ -79,6 +79,7 @@ struct EmulatorSettingsView: View {
                 Toggle("VU1 Instant", isOn: $settings.vu1Instant)
                 Toggle("Wait Loop Detection", isOn: $settings.waitLoop)
                 Toggle("INTC Stat Hack", isOn: $settings.intcStat)
+                Toggle("mVU Flag Hack", isOn: $settings.vuFlagHack)
 
                 Text("These are recommended defaults from PCSX2. Disable only if a specific game has issues.")
                     .font(.caption)
@@ -87,6 +88,24 @@ struct EmulatorSettingsView: View {
                 Text("Speedhacks")
             } footer: {
                 Text("Changes take effect on next VM boot.")
+            }
+
+            // [iPSX2 #16] Diagnostics
+            Section {
+                Picker("VU0 Macro Ops", selection: $settings.cop2MacroMode) {
+                    Text("JIT").tag(0)
+                    Text("Interpreter").tag(1)
+                    Text("Check").tag(2)
+                }
+                Picker("VIF Unpacks", selection: $settings.vifUnpackMode) {
+                    Text("JIT").tag(0)
+                    Text("Interpreter").tag(1)
+                    Text("Check").tag(2)
+                }
+            } header: {
+                Text("Diagnostics")
+            } footer: {
+                Text("For tracking down a game that draws wrong. Interpreter runs that part without the JIT. Check runs both, writes every difference to the log, and keeps the Interpreter result. Both are slower; leave them on JIT for normal play. Changes take effect on next VM boot.")
             }
 
             Section {

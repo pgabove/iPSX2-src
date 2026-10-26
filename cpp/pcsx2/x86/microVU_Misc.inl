@@ -403,10 +403,16 @@ __fi void mVUaddrFix(mV, const a64::Register& gprReg)
             armAsm->And(reg32, reg32, 0x3f);
 
 //			xADD(gprReg, (u128*)VU1.VF - (u128*)VU0.Mem);
-            a64::MemOperand mop1 = PTR_CPU(vuRegs[1].VF);
-            a64::MemOperand mop2 = PTR_CPU(vuRegs[0].Mem);
-            armAsm->Sub(REX, mop1.GetBaseRegister(), mop2.GetBaseRegister());
-            armAsm->Add(gprReg, gprReg, REX);
+            // [iPSX2 #16] VU0 addresses with bit 0x400 set map VU1's VF/VI registers. This used to
+            // subtract the two MemOperands' base registers (both x27, so +0) and read/write VU0 data
+            // memory instead, and it clobbered x4. Add the real distance, in quadwords.
+            {
+                const uptr vu1_regs = reinterpret_cast<uptr>(&g_cpuRegistersPack.vuRegs[1].VF[0]);
+                const uptr vu0_mem = reinterpret_cast<uptr>(g_cpuRegistersPack.vuRegs[0].Mem);
+                pxAssert(((vu1_regs - vu0_mem) & 0xf) == 0);
+                const s64 delta_qw = static_cast<s64>(vu1_regs - vu0_mem) / 16;
+                armAsm->Add(gprReg.X(), gprReg.X(), delta_qw);
+            }
 
 //		jmpB.SetTarget();
         armBind(&jmpB);

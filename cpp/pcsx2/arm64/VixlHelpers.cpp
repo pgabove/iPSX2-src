@@ -672,10 +672,20 @@ void armStorePtr(const a64::CPURegister& regRt, a64::Register regRs, int64_t off
     armAsm->Str(regRt, a64::MemOperand(regRs, offset));
 }
 
+// [iPSX2 #16] The zero case stores a zero register of the same width as `reg` (32-bit by default,
+// like the non-zero path). It used to store xzr, which also cleared the 4 bytes after every 32-bit
+// field written with 0 (e.g. VU1.xgkickenable right after xgkickcyclecount in the XGKick hack path).
+static inline const a64::Register& armZeroRegFor(const a64::Register& reg)
+{
+    if (reg.Is64Bits())
+        return a64::xzr;
+    return a64::wzr;
+}
+
 void armStorePtr(uint64_t imm, const void* addr, const a64::Register& reg)
 {
     if(imm == 0) {
-        armAsm->Str(a64::xzr, armMemOperandPtr(addr));
+        armAsm->Str(armZeroRegFor(reg), armMemOperandPtr(addr));
     } else {
         armAsm->Mov(reg, imm);
         armAsm->Str(reg, armMemOperandPtr(addr));
@@ -685,7 +695,7 @@ void armStorePtr(uint64_t imm, const void* addr, const a64::Register& reg)
 void armStorePtr(uint64_t imm, a64::MemOperand offset, const a64::Register& reg)
 {
     if(imm == 0) {
-        armAsm->Str(a64::xzr, offset);
+        armAsm->Str(armZeroRegFor(reg), offset);
     } else {
         armAsm->Mov(reg, imm);
         armAsm->Str(reg, offset);
@@ -695,7 +705,7 @@ void armStorePtr(uint64_t imm, a64::MemOperand offset, const a64::Register& reg)
 void armStorePtr(uint64_t imm, a64::Register regRs, int64_t offset, const a64::Register& regRt)
 {
     if(imm == 0) {
-        armAsm->Str(a64::xzr, a64::MemOperand(regRs, offset));
+        armAsm->Str(armZeroRegFor(regRt), a64::MemOperand(regRs, offset));
     } else {
         armAsm->Mov(regRt, imm);
         armAsm->Str(regRt, a64::MemOperand(regRs, offset));

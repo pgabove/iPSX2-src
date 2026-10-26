@@ -9,6 +9,11 @@
 #ifdef __APPLE__
 #include "common/Darwin/DarwinMisc.h" // [P43] VIF JIT guard
 #endif
+#include "iPSX2Diagnostics.h"
+
+// [iPSX2 #16] Settings > Emulator > Diagnostics > "VIF Unpacks": 0 = JIT, 1 = Interpreter (C unpackers),
+// 2 = Check (dynarec vs. C unpackers, see dVifUnpack). Set by VMManager::LoadSettings().
+int g_iPSX2_VIFUnpackMode = 0;
 
 enum UnpackOffset {
 	OFFSET_X = 0,
@@ -360,6 +365,7 @@ _vifT int nVifUnpack(const u8* data)
 #ifdef __APPLE__
 				&& !DarwinMisc::iPSX2_FORCE_EE_INTERP
 #endif
+				&& g_iPSX2_VIFUnpackMode != 1 // [iPSX2 #16] diagnostics: interpreter
 			)
 				dVifUnpack<idx>(data, isFill);
 			else
@@ -493,6 +499,7 @@ __ri void _nVifUnpackLoop(const u8* data)
 #ifdef __APPLE__
 			|| DarwinMisc::iPSX2_FORCE_EE_INTERP
 #endif
+			|| g_iPSX2_VIFUnpackMode != 0 // [iPSX2 #16] diagnostics: plain C unpackers, no generated code
 		)
 		{
 			ft(dest, data);

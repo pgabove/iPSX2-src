@@ -63,6 +63,20 @@ final class SettingsStore: @unchecked Sendable {
         didSet { iPSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "IntcStat", value: intcStat) }
     }
 
+    // ── Diagnostics ── [iPSX2 #16]
+    /// VU0 macro (COP2) instructions: 0 = JIT, 1 = Interpreter, 2 = Check (JIT vs. interpreter, logged).
+    var cop2MacroMode: Int {
+        didSet { iPSX2Bridge.setINIInt("iPSX2/Debug", key: "COP2MacroMode", value: Int32(clamping: cop2MacroMode)) }
+    }
+    /// VIF unpacks: 0 = JIT, 1 = Interpreter, 2 = Check (JIT vs. interpreter, logged).
+    var vifUnpackMode: Int {
+        didSet { iPSX2Bridge.setINIInt("iPSX2/Debug", key: "VIFUnpackMode", value: Int32(clamping: vifUnpackMode)) }
+    }
+    /// PCSX2's "mVU Flag Hack" speedhack (on by default).
+    var vuFlagHack: Bool {
+        didSet { iPSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "vuFlagHack", value: vuFlagHack) }
+    }
+
     // ── Graphics ──
     var renderer: Int {
         didSet { iPSX2Bridge.setINIInt("EmuCore/GS", key: "Renderer", value: Int32(clamping:renderer)) }
@@ -149,6 +163,10 @@ final class SettingsStore: @unchecked Sendable {
         vu1Instant = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vu1Instant", defaultValue: true)
         waitLoop = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "WaitLoop", defaultValue: true)
         intcStat = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "IntcStat", defaultValue: true)
+        // Diagnostics
+        cop2MacroMode = Int(iPSX2Bridge.getINIInt("iPSX2/Debug", key: "COP2MacroMode", defaultValue: 0))
+        vifUnpackMode = Int(iPSX2Bridge.getINIInt("iPSX2/Debug", key: "VIFUnpackMode", defaultValue: 0))
+        vuFlagHack = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vuFlagHack", defaultValue: true)
         // Graphics
         renderer = Int(iPSX2Bridge.getINIInt("EmuCore/GS", key: "Renderer", defaultValue: 17))
         upscaleMultiplier = iPSX2Bridge.getINIFloat("EmuCore/GS", key: "upscale_multiplier", defaultValue: 1.0)
@@ -191,6 +209,9 @@ final class SettingsStore: @unchecked Sendable {
         vu1Instant = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vu1Instant", defaultValue: true)
         waitLoop = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "WaitLoop", defaultValue: true)
         intcStat = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "IntcStat", defaultValue: true)
+        cop2MacroMode = Int(iPSX2Bridge.getINIInt("iPSX2/Debug", key: "COP2MacroMode", defaultValue: 0))
+        vifUnpackMode = Int(iPSX2Bridge.getINIInt("iPSX2/Debug", key: "VIFUnpackMode", defaultValue: 0))
+        vuFlagHack = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vuFlagHack", defaultValue: true)
         renderer = Int(iPSX2Bridge.getINIInt("EmuCore/GS", key: "Renderer", defaultValue: 17))
         upscaleMultiplier = iPSX2Bridge.getINIFloat("EmuCore/GS", key: "upscale_multiplier", defaultValue: 1.0)
         vsyncQueueSize = Int(iPSX2Bridge.getINIInt("EmuCore/GS", key: "VsyncQueueSize", defaultValue: 8))
@@ -244,6 +265,9 @@ final class SettingsStore: @unchecked Sendable {
         vu1Instant = true       // PC PCSX2 recommended default
         waitLoop = true         // PC PCSX2 recommended default
         intcStat = true         // PC PCSX2 recommended default
+        cop2MacroMode = 0       // [iPSX2 #16] diagnostics off
+        vifUnpackMode = 0
+        vuFlagHack = true       // PC PCSX2 default
     }
 
     /// Reset graphics settings to PC PCSX2 defaults

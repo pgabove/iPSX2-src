@@ -87,6 +87,12 @@ iPSX2-src-main/
 
 **Crash logs:** an unrecoverable fault prints a `@@FATAL_FAULT@@` block (pc, fault address, ESR class, page-fault path, image offsets, frame walk) just before `Aborting application.`. The previous two sessions are kept as `pcsx2_log.prev.txt` / `pcsx2_log.prev2.txt`.
 
+**EE register slots vs. microVU (COP2 macro mode):** the EE allocator has 5 slots (`iREGCNT_GPR`), and slot N lives in host register `HostGprPhys(N)` (x19–x24, see `x86/iCore.h`). microVU's allocator indexes `gprMap` by host register number and emits `armWRegister(i)`, so when it borrows EE slots in COP2 mode the two disagree about where a VI register is. Every macro op that touches VI registers therefore runs on the interpreter (`INTERPRETATE_COP2_FUNC` in `microVU_Macro.inl`). Also in macro mode the code runs inside EE blocks, where x28 is `&psxRegs`, not `&g_vuRegistersPack`: `PTR_MVU()` is wrong there (use an x27-relative address, see `mVUdivFlagMem`).
+
+**`armStorePtr(imm, ...)`** stores 32 bits unless an X register is passed (the zero case used to store `xzr`, 8 bytes).
+
+**Diagnostics (Settings › Emulator › Diagnostics):** INI `iPSX2/Debug` `COP2MacroMode` / `VIFUnpackMode` = 0 JIT, 1 Interpreter, 2 Check (run both, log `@@COP2_CHECK@@` / `@@VIF_CHECK@@` mismatches, keep the interpreter's result). Read by `VMManager::LoadSettings()` (`iPSX2Diagnostics.h`); boot logs a `@@DIAG@@` line.
+
 **Swift version:** Swift 6.0, strict concurrency. Shared singletons (`AppState.shared`, `EmulatorBridge.shared`) are marked `@unchecked Sendable` to cross the actor boundary since they call ObjC synchronously.
 
 ## 3rd-Party Dependencies (vendored under `cpp/3rdparty/`)
