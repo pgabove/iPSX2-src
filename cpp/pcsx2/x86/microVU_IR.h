@@ -412,7 +412,8 @@ public:
 			// [iPSX2 #16] x86regs[] has iREGCNT_GPR (5) EE allocator slots on iOS, while gprTotal is 25.
 			// Walking all 25 read past the array (into s_saveX86regs and beyond), which could seed
 			// gprMap with stale "cached" VI registers and clear random needed flags.
-			for (i = 0; i < std::min<int>(gprTotal, static_cast<int>(iREGCNT_GPR)); ++i)
+			const int cop2_slots = (gprTotal < static_cast<int>(iREGCNT_GPR)) ? gprTotal : static_cast<int>(iREGCNT_GPR);
+			for (i = 0; i < cop2_slots; ++i)
 			{
 				if (!x86regs[i].inuse || x86regs[i].type != X86TYPE_VIREG)
 					continue;
