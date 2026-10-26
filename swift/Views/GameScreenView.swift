@@ -27,7 +27,12 @@ struct GameScreenView: View {
                             VirtualControllerView(isLandscape: true)
                         }
                     }
-                    .ignoresSafeArea()  // Always fullscreen layout in landscape
+                    // [iPSX2 #15] Fill the sides and bottom, but never go under the top inset (the
+                    // status bar / iPadOS window controls). In full screen the status bar is hidden
+                    // and that inset is 0, so the game still fills the whole screen; in a window it
+                    // now starts below the status bar instead of behind it. Pad positions are
+                    // fractions of this container, so every button stays on screen.
+                    .ignoresSafeArea(.all, edges: [.horizontal, .bottom])
                     // [iPSX2 #12] The menu button stays inside the safe area, so it is never
                     // under the status bar (battery/clock) or the iPadOS window controls.
                     menuOverlay(isLandscape: true)
@@ -70,13 +75,14 @@ struct GameScreenView: View {
         }
     }
 
-    /// [iPSX2 #12] In landscape the game image runs under the status bar / iPadOS window controls,
-    /// so the renderer pushes the top stats down by that much. In portrait the game view already
-    /// sits inside the safe area, so no offset is needed.
+    /// [iPSX2 #12] In landscape the game image runs under the side insets (rounded corners), so the
+    /// renderer keeps the corner stats clear of them. [#15] It no longer goes under the top inset
+    /// (status bar / window controls), so no top offset is needed. In portrait the game view sits
+    /// inside the safe area, so no offset at all.
     private func updateOverlaySafeArea(_ geo: GeometryProxy, isLandscape: Bool) {
         let insets = geo.safeAreaInsets
         if isLandscape {
-            iPSX2Bridge.setOverlaySafeAreaTop(insets.top, left: insets.leading, right: insets.trailing)
+            iPSX2Bridge.setOverlaySafeAreaTop(0, left: insets.leading, right: insets.trailing)
         } else {
             iPSX2Bridge.setOverlaySafeAreaTop(0, left: 0, right: 0)
         }

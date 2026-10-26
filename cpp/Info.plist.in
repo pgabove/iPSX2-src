@@ -47,6 +47,22 @@
     </array>
     <key>UIRequiresFullScreen</key>
     <false/>
+    <!-- [iPSX2 #15] Game Mode: identify iPSX2 as a game and declare Game Mode support.
+         GCSupportsGameMode covers iPadOS 18+, LSSupportsGameMode iPadOS 26+ (both may be set).
+         This makes the app eligible; iPadOS decides at runtime when to turn Game Mode on. -->
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.games</string>
+    <key>GCSupportsGameMode</key>
+    <true/>
+    <key>LSSupportsGameMode</key>
+    <true/>
+    <key>GCSupportedGameControllers</key>
+    <array>
+        <dict>
+            <key>ProfileName</key>
+            <string>ExtendedGamepad</string>
+        </dict>
+    </array>
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>
     <key>UILaunchScreen</key>
