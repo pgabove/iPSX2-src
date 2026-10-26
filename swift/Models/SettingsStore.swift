@@ -72,6 +72,10 @@ final class SettingsStore: @unchecked Sendable {
     var vifUnpackMode: Int {
         didSet { iPSX2Bridge.setINIInt("iPSX2/Debug", key: "VIFUnpackMode", value: Int32(clamping: vifUnpackMode)) }
     }
+    /// EE FPU (COP1) ops: 0 = JIT, 1 = Interpreter, 2 = Check (JIT vs. interpreter, logged).
+    var fpuMode: Int {
+        didSet { iPSX2Bridge.setINIInt("iPSX2/Debug", key: "FPUMode", value: Int32(clamping: fpuMode)) }
+    }
     /// PCSX2's "mVU Flag Hack" speedhack (on by default).
     var vuFlagHack: Bool {
         didSet { iPSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "vuFlagHack", value: vuFlagHack) }
@@ -166,6 +170,7 @@ final class SettingsStore: @unchecked Sendable {
         // Diagnostics
         cop2MacroMode = Int(iPSX2Bridge.getINIInt("iPSX2/Debug", key: "COP2MacroMode", defaultValue: 0))
         vifUnpackMode = Int(iPSX2Bridge.getINIInt("iPSX2/Debug", key: "VIFUnpackMode", defaultValue: 0))
+        fpuMode = Int(iPSX2Bridge.getINIInt("iPSX2/Debug", key: "FPUMode", defaultValue: 0))
         vuFlagHack = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vuFlagHack", defaultValue: true)
         // Graphics
         renderer = Int(iPSX2Bridge.getINIInt("EmuCore/GS", key: "Renderer", defaultValue: 17))
@@ -211,6 +216,7 @@ final class SettingsStore: @unchecked Sendable {
         intcStat = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "IntcStat", defaultValue: true)
         cop2MacroMode = Int(iPSX2Bridge.getINIInt("iPSX2/Debug", key: "COP2MacroMode", defaultValue: 0))
         vifUnpackMode = Int(iPSX2Bridge.getINIInt("iPSX2/Debug", key: "VIFUnpackMode", defaultValue: 0))
+        fpuMode = Int(iPSX2Bridge.getINIInt("iPSX2/Debug", key: "FPUMode", defaultValue: 0))
         vuFlagHack = iPSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vuFlagHack", defaultValue: true)
         renderer = Int(iPSX2Bridge.getINIInt("EmuCore/GS", key: "Renderer", defaultValue: 17))
         upscaleMultiplier = iPSX2Bridge.getINIFloat("EmuCore/GS", key: "upscale_multiplier", defaultValue: 1.0)
@@ -267,6 +273,7 @@ final class SettingsStore: @unchecked Sendable {
         intcStat = true         // PC PCSX2 recommended default
         cop2MacroMode = 0       // [iPSX2 #16] diagnostics off
         vifUnpackMode = 0
+        fpuMode = 0
         vuFlagHack = true       // PC PCSX2 default
     }
 

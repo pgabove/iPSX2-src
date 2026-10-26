@@ -102,6 +102,11 @@ struct EmulatorSettingsView: View {
                     Text("Interpreter").tag(1)
                     Text("Check").tag(2)
                 }
+                Picker("EE FPU", selection: $settings.fpuMode) {
+                    Text("JIT").tag(0)
+                    Text("Interpreter").tag(1)
+                    Text("Check").tag(2)
+                }
             } header: {
                 Text("Diagnostics")
             } footer: {

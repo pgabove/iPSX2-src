@@ -11,6 +11,10 @@
 #include "x86/iFPU.h"
 #include "x86/iMMI.h"
 #include "x86/iR5900.h"
+#include "iPSX2Diagnostics.h"
+
+#include <cmath>
+#include <cstring>
 
 #if !defined(__ANDROID__)
 using namespace x86Emitter;
@@ -347,7 +351,7 @@ int eeRecompileCodeXMM(int xmminfo)
 #define _Fd_ _Sa_
 
 // rd = rs op rt
-void eeFPURecompileCode(R5900FNPTR_INFO xmmcode, R5900FNPTR fpucode, int xmminfo)
+static void eeFPURecompileCodeImpl(R5900FNPTR_INFO xmmcode, R5900FNPTR fpucode, int xmminfo)
 {
 	int mmregs = -1, mmregt = -1, mmregd = -1, mmregacc = -1;
 	int info = PROCESS_EE_XMM;
@@ -513,4 +517,189 @@ void eeFPURecompileCode(R5900FNPTR_INFO xmmcode, R5900FNPTR fpucode, int xmminfo
 	}
 
 	xmmcode(info);
+}
+
+//------------------------------------------------------------------
+// [iPSX2 #16] EE FPU diagnostics (Settings > Emulator > Diagnostics > "EE FPU")
+//------------------------------------------------------------------
+// g_iPSX2_FPUMode: 0 = JIT, 1 = Interpreter (FPU arithmetic ops call their interpreter functions),
+// 2 = Check (run the recompiled op, rerun it on the interpreter from the same state, log
+// @@FPU_CHECK@@ differences, keep the interpreter's result). Covers every op that goes through
+// eeFPURecompileCode (add/sub/mul/div/sqrt/rsqrt/madd/msub/min/max/abs/neg/mov/compares/cvt.s).
+int g_iPSX2_FPUMode = 0;
+
+namespace
+{
+	struct FPUCheckStat
+	{
+		u32 funct;
+		u64 checks;
+		u64 mismatches;
+	};
+} // namespace
+
+static fpuRegisters s_fpu_before;
+static fpuRegisters s_fpu_jit;
+static FPUCheckStat s_fpu_stats[64];
+static u64 s_fpu_checks = 0;
+static u64 s_fpu_mismatches = 0;
+static u64 s_fpu_next_report = 1u << 16;
+static u32 s_fpu_logged = 0;
+
+static bool iPSX2_FPUFloatClose(u32 a, u32 b)
+{
+	if (a == b)
+		return true;
+	const u32 ea = (a >> 23) & 0xff;
+	const u32 eb = (b >> 23) & 0xff;
+	if (ea == 0 && eb == 0)
+		return true;
+	const bool same_sign = ((a ^ b) & 0x80000000u) == 0;
+	if (ea >= 0xfe && eb >= 0xfe)
+		return same_sign;
+	if (ea == 0xff || eb == 0xff)
+		return false;
+	if (same_sign)
+	{
+		const s64 ulps = static_cast<s64>(a & 0x7fffffffu) - static_cast<s64>(b & 0x7fffffffu);
+		if (ulps >= -4 && ulps <= 4)
+			return true;
+	}
+	float fa, fb;
+	std::memcpy(&fa, &a, sizeof(fa));
+	std::memcpy(&fb, &b, sizeof(fb));
+	const float scale = std::max(1.0f, std::max(std::fabs(fa), std::fabs(fb)));
+	return std::fabs(fa - fb) <= scale * (1.0f / 65536.0f);
+}
+
+static void iPSX2_FPUCheckSnapshot()
+{
+	s_fpu_before = fpuRegs;
+}
+
+static void iPSX2_FPUCheckReport()
+{
+	Console.WriteLn("@@FPU_CHECK@@ summary: %llu FPU ops checked, %llu mismatched",
+		static_cast<unsigned long long>(s_fpu_checks), static_cast<unsigned long long>(s_fpu_mismatches));
+	char line[256];
+	size_t used = 0;
+	line[0] = 0;
+	for (u32 i = 0; i < 64; i++)
+	{
+		const FPUCheckStat& st = s_fpu_stats[i];
+		if (!st.checks)
+			continue;
+		char item[64];
+		if (st.mismatches)
+			std::snprintf(item, sizeof(item), " f%02u=%llu(BAD %llu)", i, static_cast<unsigned long long>(st.checks),
+				static_cast<unsigned long long>(st.mismatches));
+		else
+			std::snprintf(item, sizeof(item), " f%02u=%llu", i, static_cast<unsigned long long>(st.checks));
+		const size_t len = std::strlen(item);
+		if (used + len >= sizeof(line))
+		{
+			Console.WriteLn("@@FPU_CHECK@@ %s", line);
+			used = 0;
+			line[0] = 0;
+		}
+		std::memcpy(line + used, item, len + 1);
+		used += len;
+	}
+	if (used)
+		Console.WriteLn("@@FPU_CHECK@@ %s (fNN = COP1 function code, see R5900 FPU table)", line);
+}
+
+static void iPSX2_FPUCheckCompare(u32 code, R5900FNPTR interp, u32 pc)
+{
+	// Keep what the recompiled code produced, then rerun the op on the interpreter from the same state.
+	s_fpu_jit = fpuRegs;
+	fpuRegs = s_fpu_before;
+	const u32 saved_code = cpuRegs.code;
+	cpuRegs.code = code;
+	interp();
+	cpuRegs.code = saved_code;
+
+	FPUCheckStat& stat = s_fpu_stats[code & 0x3f];
+	stat.funct = code & 0x3f;
+	stat.checks++;
+	s_fpu_checks++;
+
+	int diffs = 0;
+	int first = -2; // register index, -1 = ACC, 32 = condition bit
+	for (int r = 0; r < 32; r++)
+	{
+		if (!iPSX2_FPUFloatClose(s_fpu_jit.fpr[r].UL, fpuRegs.fpr[r].UL))
+		{
+			if (diffs++ == 0)
+				first = r;
+		}
+	}
+	if (!iPSX2_FPUFloatClose(s_fpu_jit.ACC.UL, fpuRegs.ACC.UL))
+	{
+		if (diffs++ == 0)
+			first = -1;
+	}
+	// Only the condition bit (C) of FCR31 is compared: the recompiler doesn't track O/U like the interpreter.
+	if ((s_fpu_jit.fprc[31] ^ fpuRegs.fprc[31]) & 0x00800000u)
+	{
+		if (diffs++ == 0)
+			first = 32;
+	}
+
+	if (diffs != 0)
+	{
+		stat.mismatches++;
+		s_fpu_mismatches++;
+		if (s_fpu_logged < 60)
+		{
+			s_fpu_logged++;
+			std::string disasm;
+			R5900::disR5900Fasm(disasm, code, pc, false);
+			const u32 fs = (code >> 11) & 0x1f;
+			const u32 ft = (code >> 16) & 0x1f;
+			Console.WriteLn("@@FPU_CHECK@@ MISMATCH #%u pc=%08X %08X %s (%d differ)", s_fpu_logged, pc, code, disasm.c_str(), diffs);
+			Console.WriteLn("@@FPU_CHECK@@   in fs=f%02u %08X (%g) ft=f%02u %08X (%g) acc=%08X (%g) fcr31=%08X", fs,
+				s_fpu_before.fpr[fs].UL, s_fpu_before.fpr[fs].f, ft, s_fpu_before.fpr[ft].UL, s_fpu_before.fpr[ft].f,
+				s_fpu_before.ACC.UL, s_fpu_before.ACC.f, s_fpu_before.fprc[31]);
+			if (first >= 0 && first < 32)
+				Console.WriteLn("@@FPU_CHECK@@   f%02d jit=%08X (%g) interp=%08X (%g)", first, s_fpu_jit.fpr[first].UL,
+					s_fpu_jit.fpr[first].f, fpuRegs.fpr[first].UL, fpuRegs.fpr[first].f);
+			else if (first == -1)
+				Console.WriteLn("@@FPU_CHECK@@   acc jit=%08X (%g) interp=%08X (%g)", s_fpu_jit.ACC.UL, s_fpu_jit.ACC.f,
+					fpuRegs.ACC.UL, fpuRegs.ACC.f);
+			else
+				Console.WriteLn("@@FPU_CHECK@@   fcr31 jit=%08X interp=%08X", s_fpu_jit.fprc[31], fpuRegs.fprc[31]);
+		}
+	}
+
+	// The interpreter's result stays in fpuRegs.
+
+	if (s_fpu_checks >= s_fpu_next_report)
+	{
+		iPSX2_FPUCheckReport();
+		s_fpu_next_report = (s_fpu_next_report < (1u << 22)) ? (s_fpu_next_report << 2) : (s_fpu_next_report + (1u << 22));
+	}
+}
+
+void eeFPURecompileCode(R5900FNPTR_INFO xmmcode, R5900FNPTR fpucode, int xmminfo)
+{
+	if (g_iPSX2_FPUMode == 1)
+	{
+		recCall(fpucode);
+		return;
+	}
+	if (g_iPSX2_FPUMode == 2)
+	{
+		// Inputs in memory and nothing cached across the op, then compare its results.
+		iFlushCall(FLUSH_FREE_XMM);
+		armEmitCall(reinterpret_cast<const void*>(iPSX2_FPUCheckSnapshot));
+		eeFPURecompileCodeImpl(xmmcode, fpucode, xmminfo);
+		iFlushCall(FLUSH_FREE_XMM);
+		armAsm->Mov(a64::w0, static_cast<u32>(cpuRegs.code));
+		armMoveAddressToReg(a64::x1, reinterpret_cast<const void*>(fpucode));
+		armAsm->Mov(a64::w2, g_recompilingDelaySlot ? pc : (pc - 4));
+		armEmitCall(reinterpret_cast<const void*>(iPSX2_FPUCheckCompare));
+		return;
+	}
+	eeFPURecompileCodeImpl(xmmcode, fpucode, xmminfo);
 }

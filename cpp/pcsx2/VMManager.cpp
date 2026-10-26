@@ -960,6 +960,7 @@ static void iPSX2_LoadDiagnosticSettings(SettingsInterface& si)
 	static const char* const mode_names[3] = {"JIT", "Interpreter", "Check"};
 	const int cop2 = std::clamp(si.GetIntValue("iPSX2/Debug", "COP2MacroMode", 0), 0, 2);
 	const int vif = std::clamp(si.GetIntValue("iPSX2/Debug", "VIFUnpackMode", 0), 0, 2);
+	const int fpu = std::clamp(si.GetIntValue("iPSX2/Debug", "FPUMode", 0), 0, 2);
 
 	// Check mode compares every macro op's flags with the interpreter's, so every op must compute
 	// them (and the status flag in memory must stay normalized between ops).
@@ -968,8 +969,9 @@ static void iPSX2_LoadDiagnosticSettings(SettingsInterface& si)
 
 	g_iPSX2_COP2MacroMode = cop2;
 	g_iPSX2_VIFUnpackMode = vif;
-	Console.WriteLn("@@DIAG@@ VU0 macro ops=%s, VIF unpacks=%s, mVU flag hack=%d, EE core=%s",
-		mode_names[cop2], mode_names[vif], EmuConfig.Speedhacks.vuFlagHack ? 1 : 0,
+	g_iPSX2_FPUMode = fpu;
+	Console.WriteLn("@@DIAG@@ VU0 macro ops=%s, VIF unpacks=%s, EE FPU=%s, mVU flag hack=%d, EE core=%s",
+		mode_names[cop2], mode_names[vif], mode_names[fpu], EmuConfig.Speedhacks.vuFlagHack ? 1 : 0,
 		EmuConfig.Cpu.CoreType == 1 ? "Interpreter" : "JIT");
 }
 

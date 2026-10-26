@@ -91,7 +91,7 @@ iPSX2-src-main/
 
 **`armStorePtr(imm, ...)`** stores 32 bits unless an X register is passed (the zero case used to store `xzr`, 8 bytes).
 
-**Diagnostics (Settings › Emulator › Diagnostics):** INI `iPSX2/Debug` `COP2MacroMode` / `VIFUnpackMode` = 0 JIT, 1 Interpreter, 2 Check (run both, log `@@COP2_CHECK@@` / `@@VIF_CHECK@@` mismatches, keep the interpreter's result). Read by `VMManager::LoadSettings()` (`iPSX2Diagnostics.h`); boot logs a `@@DIAG@@` line.
+**Diagnostics (Settings › Emulator › Diagnostics):** INI `iPSX2/Debug` `COP2MacroMode` / `VIFUnpackMode` / `FPUMode` = 0 JIT, 1 Interpreter, 2 Check (run both, log `@@COP2_CHECK@@` / `@@VIF_CHECK@@` / `@@FPU_CHECK@@` mismatches, keep the interpreter's result). Read by `VMManager::LoadSettings()` (`iPSX2Diagnostics.h`); boot logs a `@@DIAG@@` line.
 
 **Swift version:** Swift 6.0, strict concurrency. Shared singletons (`AppState.shared`, `EmulatorBridge.shared`) are marked `@unchecked Sendable` to cross the actor boundary since they call ObjC synchronously.
 

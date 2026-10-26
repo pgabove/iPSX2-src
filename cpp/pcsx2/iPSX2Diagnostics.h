@@ -10,3 +10,4 @@
 //   2 = Check: run both, log differences to the console log, keep the interpreter's result
 extern int g_iPSX2_COP2MacroMode; // VU0 macro (COP2) ops - x86/microVU_Macro.inl
 extern int g_iPSX2_VIFUnpackMode; // VIF unpacks         - Vif_Unpack.cpp, arm64/Vif_Dynarec.cpp
+extern int g_iPSX2_FPUMode;       // EE FPU (COP1) ops    - x86/ix86-32/iR5900Templates.cpp
