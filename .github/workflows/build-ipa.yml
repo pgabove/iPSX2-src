@@ -10,11 +10,11 @@ on:
 jobs:
   build-ipa:
     name: Build Unsigned iPSX2.ipa
-    # macOS 14 is the image with Xcode 16.2 *and* its iOS 18.2 simulator runtime, which
-    # `xcodebuild archive` and the asset catalog compiler both need. The macOS 15 image has
-    # Xcode 16.2 without that runtime ("Found no destinations", actool "No simulator
-    # runtime"). macOS 14 runners stop on 2026-11-02: move to macos-15 + Xcode 16.4 then.
-    runs-on: macos-14        # Apple Silicon runner — fastest for arm64 iOS
+    # macOS 15 + Xcode 16.4: that Xcode ships with its iOS 18.5 SDK *and* simulator runtime,
+    # which `xcodebuild archive` and the asset catalog compiler both need. (macOS 15's Xcode
+    # 16.2 lacks its runtime — "Found no destinations", actool "No simulator runtime" — and
+    # the macOS 14 image this used before is retired on 2026-11-02, with brownouts before.)
+    runs-on: macos-15        # Apple Silicon runner — fastest for arm64 iOS
 
     env:
       SCHEME: iPSX2
@@ -38,18 +38,21 @@ jobs:
       # ──────────────────────────────────────────────────────────────────────────
       # 2. Select Xcode
       # ──────────────────────────────────────────────────────────────────────────
-      # Xcode 16.2 is what every earlier build used; newer Xcodes change compiler behaviour.
-      - name: Select Xcode 16.2
+      # Stay on Xcode 16 (iOS 18 SDK): Xcode 26+ changes the SDK and Swift behaviour a lot.
+      # 16.4 is preferred because the image installs its iOS simulator runtime.
+      - name: Select Xcode 16.4
         run: |
-          if [ -d /Applications/Xcode_16.2.app ]; then
-            XCODE=Xcode_16.2.app
-          else
-            XCODE=$(ls /Applications | grep '^Xcode_16' | sort -V | tail -1)
-          fi
+          XCODE=""
+          for v in 16.4 16.3; do
+            if [ -d "/Applications/Xcode_$v.app" ]; then XCODE="Xcode_$v.app"; break; fi
+          done
+          [ -n "$XCODE" ] || XCODE=$(ls /Applications | grep '^Xcode_16' | sort -V | tail -1)
           echo "Using $XCODE"
+          echo "::notice title=Xcode::$XCODE on $(sw_vers -productName) $(sw_vers -productVersion)"
           sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
           xcodebuild -version
           swift --version
+          echo "Installed iOS runtimes:"; xcrun simctl list runtimes | grep -i ios || echo "(none listed)"
 
       # ──────────────────────────────────────────────────────────────────────────
       # 2b. StikJIT sources for the built-in JIT helper (PlugIns/iPSX2JITHelper.appex)
@@ -195,6 +198,7 @@ jobs:
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -archivePath "$ARCHIVE_PATH" \
             ONLY_ACTIVE_ARCH=NO \
             CODE_SIGN_IDENTITY="" \
