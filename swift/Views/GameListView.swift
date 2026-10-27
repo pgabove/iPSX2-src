@@ -20,6 +20,10 @@ struct GameListView: View {
     // and offer the built-in JIT helper (or StikDebug) to turn it on.
     @State private var jit = BuiltInJITModel.shared
     @State private var showPairingImporter = false
+    // [iPSX2 #18] The controller's D-pad moves iPadOS's focus through this list; the left stick
+    // (ControllerNavigator) moves the same focus through these ids.
+    @FocusState private var focusedRow: String?
+    @State private var isVisible = false
 
     private var showJITCard: Bool { !jit.isJITOn || jit.isBusy }
 
@@ -47,6 +51,7 @@ struct GameListView: View {
                         }
                         ForEach(sortedGames) { game in
                             gameRow(game)
+                                .focused($focusedRow, equals: game.name)
                         }
                     }
                 }
@@ -104,8 +109,38 @@ struct GameListView: View {
         .onAppear {
             loadGames()
             jit.refresh()
+            isVisible = true
+        }
+        .onDisappear {
+            isVisible = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ControllerNavigator.moveNotification)) { note in
+            guard isVisible, let direction = note.userInfo?["direction"] as? String else { return }
+            moveFocus(direction)
         }
     }
+
+    /// [iPSX2 #18] Left stick up/down: the row above/below the focused one (the first row if none).
+    private func moveFocus(_ direction: String) {
+        var order: [String] = []
+        if appState.runningGameName != nil {
+            order += [Self.resumeRowID, Self.stopRowID]
+        }
+        order += sortedGames.map(\.name)
+        guard !order.isEmpty else { return }
+        let current = focusedRow.flatMap { order.firstIndex(of: $0) }
+        switch direction {
+        case "up":
+            focusedRow = order[max((current ?? 0) - 1, 0)]
+        case "down":
+            focusedRow = order[current.map { min($0 + 1, order.count - 1) } ?? 0]
+        default:
+            break
+        }
+    }
+
+    private static let resumeRowID = "#iPSX2.resume"
+    private static let stopRowID = "#iPSX2.stop"
 
     private func vmStatusSection(gameName: String) -> some View {
         Section {
@@ -136,6 +171,7 @@ struct GameListView: View {
                 .padding(.vertical, 6)
             }
             .tint(.primary)
+            .focused($focusedRow, equals: Self.resumeRowID)
 
             // Stop button — separate row with confirmation alert
             Button(role: .destructive) {
@@ -148,6 +184,7 @@ struct GameListView: View {
                     Spacer()
                 }
             }
+            .focused($focusedRow, equals: Self.stopRowID)
         }
         .alert("Stop Emulation?", isPresented: $showStopAlert) {
             Button("Cancel", role: .cancel) { }

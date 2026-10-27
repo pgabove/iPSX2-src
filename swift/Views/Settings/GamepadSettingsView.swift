@@ -57,6 +57,7 @@ struct GamepadSettingsView: View {
     @State private var pollTimer: Timer? = nil
     @State private var vibrationStatus = 0       // [iPSX2 #17] see iPSX2Bridge.controllerVibrationStatus
     @State private var vibrationController = ""
+    @State private var navigator = ControllerNavigator.shared // [iPSX2 #18] shortcut capture
 
     var body: some View {
         Form {
@@ -84,6 +85,25 @@ struct GamepadSettingsView: View {
                 Text("Vibration")
             } footer: {
                 Text(vibrationFooter)
+            }
+
+            // [iPSX2 #18] Menus and shortcuts.
+            Section {
+                Toggle("Left Stick Moves the D-pad Too", isOn: $settings.leftStickAsDpad)
+            } header: {
+                Text("Controls")
+            } footer: {
+                Text("Lets the left stick move through game menus that only listen to the D-pad, like BT4's. Turn it off if a game uses the D-pad for something else.")
+            }
+
+            Section {
+                ForEach(ControllerShortcut.allCases) { shortcut in
+                    shortcutRow(shortcut)
+                }
+            } header: {
+                Text("Shortcuts")
+            } footer: {
+                Text("Tap a shortcut, then press the controller button for it. Pick buttons the game doesn't use, like the Stadia controller's Assistant and Capture buttons. If nothing happens when you press a button, iPadOS doesn't pass that button to apps; tap the row again to cancel. Quick Load needs a half-second hold so a bump can't throw away your progress.")
             }
 
             Section {
@@ -117,7 +137,47 @@ struct GamepadSettingsView: View {
         }
         .onDisappear {
             stopCapture()
+            navigator.capturing = nil
         }
+    }
+
+    /// [iPSX2 #18] Shortcut name, the assigned button (or "Press a button…" while capturing), clear.
+    @ViewBuilder
+    private func shortcutRow(_ shortcut: ControllerShortcut) -> some View {
+        let isCapturing = navigator.capturing == shortcut
+        let button = settings.button(for: shortcut)
+        HStack {
+            Button {
+                navigator.capturing = isCapturing ? nil : shortcut
+            } label: {
+                HStack {
+                    Text(shortcut.title)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    if isCapturing {
+                        Text("Press a button…")
+                            .fontWeight(.medium)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text(button.isEmpty ? "Not set" : ControllerNavigator.displayName(for: button))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            if !button.isEmpty && !isCapturing {
+                Button {
+                    settings.setButton("", for: shortcut)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Clear")
+            }
+        }
+        .listRowBackground(isCapturing ? Color.orange.opacity(0.15) : nil)
     }
 
     /// [iPSX2 #17] Whether iPadOS lets apps vibrate the connected controller.

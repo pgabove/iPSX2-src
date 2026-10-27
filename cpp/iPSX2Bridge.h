@@ -155,4 +155,11 @@ typedef NS_ENUM(NSInteger, iPSX2PadButton) {
 // Large motor, then small motor, at the current strength.
 + (void)testControllerVibration;
 
+// [iPSX2 #18] The controller's left stick also presses the PS2 D-pad (game menus that ignore the stick).
++ (void)setLeftStickAsDpad:(BOOL)enabled NS_SWIFT_NAME(setLeftStickAsDpad(_:));
+// [iPSX2 #18] Pause/resume emulation (controller menu). Done on the emulator thread shortly after.
++ (void)setEmulationPaused:(BOOL)paused NS_SWIFT_NAME(setEmulationPaused(_:));
+// [iPSX2 #18] Write a line to pcsx2_log.txt.
++ (void)log:(nonnull NSString *)message NS_SWIFT_NAME(log(_:));
+
 @end

@@ -167,6 +167,25 @@ final class SettingsStore: @unchecked Sendable {
         }
     }
 
+    // ── Controller menus and shortcuts ── [iPSX2 #18]
+    /// The left stick also presses the PS2 D-pad (game menus that only read the D-pad).
+    var leftStickAsDpad: Bool {
+        didSet {
+            iPSX2Bridge.setINIBool("iPSX2/Gamepad", key: "LeftStickAsDpad", value: leftStickAsDpad)
+            iPSX2Bridge.setLeftStickAsDpad(leftStickAsDpad)
+        }
+    }
+    /// Controller buttons (GameController element names, "" = none) for the controller shortcuts.
+    var shortcutOpenMenu: String {
+        didSet { iPSX2Bridge.setINIString("iPSX2/Shortcuts", key: "OpenMenu", value: shortcutOpenMenu) }
+    }
+    var shortcutQuickSave: String {
+        didSet { iPSX2Bridge.setINIString("iPSX2/Shortcuts", key: "QuickSave", value: shortcutQuickSave) }
+    }
+    var shortcutQuickLoad: String {
+        didSet { iPSX2Bridge.setINIString("iPSX2/Shortcuts", key: "QuickLoad", value: shortcutQuickLoad) }
+    }
+
     // ── Init from INI ──
     private init() {
         // CPU
@@ -214,11 +233,17 @@ final class SettingsStore: @unchecked Sendable {
         // Controller vibration
         vibrationEnabled = iPSX2Bridge.getINIBool("iPSX2/Gamepad", key: "Vibration", defaultValue: true)
         vibrationStrength = iPSX2Bridge.getINIFloat("iPSX2/Gamepad", key: "VibrationStrength", defaultValue: 1.0)
+        // Controller menus and shortcuts
+        leftStickAsDpad = iPSX2Bridge.getINIBool("iPSX2/Gamepad", key: "LeftStickAsDpad", defaultValue: true)
+        shortcutOpenMenu = iPSX2Bridge.getINIString("iPSX2/Shortcuts", key: "OpenMenu", defaultValue: ControllerShortcut.openMenu.defaultButton)
+        shortcutQuickSave = iPSX2Bridge.getINIString("iPSX2/Shortcuts", key: "QuickSave", defaultValue: ControllerShortcut.quickSave.defaultButton)
+        shortcutQuickLoad = iPSX2Bridge.getINIString("iPSX2/Shortcuts", key: "QuickLoad", defaultValue: ControllerShortcut.quickLoad.defaultButton)
         // [P60] Force MTVU off (known buggy)
         iPSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "vuThread", value: false)
         // Apply OSD preset
         iPSX2Bridge.applyOsdPreset(Int32(clamping:osdPreset.rawValue))
         applyVibration()
+        iPSX2Bridge.setLeftStickAsDpad(leftStickAsDpad)
     }
 
     /// Reload ALL settings from INI (call on VM start/stop)
@@ -260,6 +285,33 @@ final class SettingsStore: @unchecked Sendable {
         autoHidePadWithController = iPSX2Bridge.getINIBool("iPSX2/UI", key: "AutoHidePadWithController", defaultValue: true)
         vibrationEnabled = iPSX2Bridge.getINIBool("iPSX2/Gamepad", key: "Vibration", defaultValue: true)
         vibrationStrength = iPSX2Bridge.getINIFloat("iPSX2/Gamepad", key: "VibrationStrength", defaultValue: 1.0)
+        leftStickAsDpad = iPSX2Bridge.getINIBool("iPSX2/Gamepad", key: "LeftStickAsDpad", defaultValue: true)
+        shortcutOpenMenu = iPSX2Bridge.getINIString("iPSX2/Shortcuts", key: "OpenMenu", defaultValue: ControllerShortcut.openMenu.defaultButton)
+        shortcutQuickSave = iPSX2Bridge.getINIString("iPSX2/Shortcuts", key: "QuickSave", defaultValue: ControllerShortcut.quickSave.defaultButton)
+        shortcutQuickLoad = iPSX2Bridge.getINIString("iPSX2/Shortcuts", key: "QuickLoad", defaultValue: ControllerShortcut.quickLoad.defaultButton)
+    }
+
+    /// [iPSX2 #18] The controller button assigned to a shortcut ("" = none).
+    func button(for shortcut: ControllerShortcut) -> String {
+        switch shortcut {
+        case .openMenu: return shortcutOpenMenu
+        case .quickSave: return shortcutQuickSave
+        case .quickLoad: return shortcutQuickLoad
+        }
+    }
+
+    /// [iPSX2 #18] Assigns a controller button to a shortcut; a button only does one shortcut.
+    func setButton(_ button: String, for shortcut: ControllerShortcut) {
+        if !button.isEmpty {
+            for other in ControllerShortcut.allCases where other != shortcut && self.button(for: other) == button {
+                setButton("", for: other)
+            }
+        }
+        switch shortcut {
+        case .openMenu: shortcutOpenMenu = button
+        case .quickSave: shortcutQuickSave = button
+        case .quickLoad: shortcutQuickLoad = button
+        }
     }
 
     /// [iPSX2 #17] Hands the vibration settings to the emulator (also read from the INI at boot).

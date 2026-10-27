@@ -347,6 +347,10 @@ static void ControllersChangedOnMain()
         fprintf(stderr, "@@RUMBLE@@ controller=\"%s\" category=\"%s\" haptics=%s localities=[%s]\n",
             controller.vendorName.UTF8String ?: "?", controller.productCategory.UTF8String ?: "?",
             controller.haptics ? "yes" : "no", [names componentsJoinedByString:@","].UTF8String ?: "");
+        // [iPSX2 #18] The buttons iPadOS passes to apps (what Settings › Game Controller › Shortcuts can use).
+        NSArray<NSString*>* buttons =
+            [controller.physicalInputProfile.buttons.allKeys sortedArrayUsingSelector:@selector(compare:)];
+        fprintf(stderr, "@@CONTROLLER@@ buttons=[%s]\n", [buttons componentsJoinedByString:@", "].UTF8String ?: "");
     } else {
         fprintf(stderr, "@@RUMBLE@@ no game controller connected\n");
     }

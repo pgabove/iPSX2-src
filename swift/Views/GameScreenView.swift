@@ -9,6 +9,7 @@ struct GameScreenView: View {
     @State private var appState = AppState.shared
     @State private var settings = SettingsStore.shared
     @State private var saveStates = SaveStateStore.shared // [iPSX2 #17]
+    @State private var navigator = ControllerNavigator.shared // [iPSX2 #18]
     @State private var padVisible = true
     @State private var fullScreen = false
     @State private var controllerConnected = false // [iPSX2 #12]
@@ -59,6 +60,12 @@ struct GameScreenView: View {
             .onAppear { updateOverlaySafeArea(geo, isLandscape: isLandscape) }
             .onChange(of: geo.safeAreaInsets) { _, _ in updateOverlaySafeArea(geo, isLandscape: isLandscape) }
             .onChange(of: isLandscape) { _, newValue in updateOverlaySafeArea(geo, isLandscape: newValue) }
+        }
+        // [iPSX2 #18] Pause menu opened from the controller.
+        .overlay {
+            if navigator.isMenuOpen {
+                ControllerMenuView()
+            }
         }
         .onChange(of: fullScreen) { _, newValue in
             iPSX2Bridge.setFullScreen(newValue)
@@ -115,15 +122,19 @@ struct GameScreenView: View {
         return "Slot \(slot.id) — \(date.formatted(date: .abbreviated, time: .shortened))"
     }
 
+    @ViewBuilder
     private func menuOverlay(isLandscape: Bool) -> some View {
-        VStack {
-            HStack {
+        // [iPSX2 #18] Hidden while the controller's pause menu is up, so A can't open it underneath.
+        if !navigator.isMenuOpen {
+            VStack {
+                HStack {
+                    Spacer()
+                    menuButton(isLandscape: isLandscape)
+                }
+                .padding(.top, isLandscape ? 8 : 4)
+                .padding(.trailing, isLandscape ? 8 : 4)
                 Spacer()
-                menuButton(isLandscape: isLandscape)
             }
-            .padding(.top, isLandscape ? 8 : 4)
-            .padding(.trailing, isLandscape ? 8 : 4)
-            Spacer()
         }
     }
 

@@ -15,6 +15,8 @@ extern "C" void iPSX2_SetSDLFullscreen(bool enabled);
 extern "C" SDL_Gamepad* iPSX2_GetActiveGamepad();
 extern "C" void iPSX2_SetOverlaySafeAreaPoints(CGFloat top, CGFloat left, CGFloat right); // ios_main.mm
 extern "C" bool iPSX2_RequestSaveState(int slot, bool save);                               // ios_main.mm
+extern "C" void iPSX2_SetLeftStickAsDpad(bool enabled);                                    // ios_main.mm
+extern "C" void iPSX2_SetEmulationPaused(bool paused);                                     // ios_main.mm
 #include "iPSX2Rumble.h"
 #include "Common.h"
 #include "CDVD/CDVD.h"
@@ -542,6 +544,20 @@ static NSDate* s_lastNVMSaveDate = nil;
 
 + (void)testControllerVibration {
     iPSX2_TestControllerRumble();
+}
+
+#pragma mark - Controller menus and shortcuts [iPSX2 #18]
+
++ (void)setLeftStickAsDpad:(BOOL)enabled {
+    iPSX2_SetLeftStickAsDpad(enabled ? true : false);
+}
+
++ (void)setEmulationPaused:(BOOL)paused {
+    iPSX2_SetEmulationPaused(paused ? true : false);
+}
+
++ (void)log:(nonnull NSString *)message {
+    Console.WriteLn("%s", message.UTF8String ?: "");
 }
 
 @end

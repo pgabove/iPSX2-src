@@ -187,6 +187,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         ${CMAKE_SOURCE_DIR}/../swift/Models/FileImportHandler.swift
         ${CMAKE_SOURCE_DIR}/../swift/Models/BuiltInJITModel.swift
         ${CMAKE_SOURCE_DIR}/../swift/Models/SaveStateStore.swift
+        ${CMAKE_SOURCE_DIR}/../swift/Models/ControllerNavigator.swift
+        ${CMAKE_SOURCE_DIR}/../swift/Views/ControllerMenuView.swift
         ${CMAKE_SOURCE_DIR}/../swift/Views/JITCardView.swift
         ${CMAKE_SOURCE_DIR}/../swift/Views/Settings/JITSettingsView.swift
     )

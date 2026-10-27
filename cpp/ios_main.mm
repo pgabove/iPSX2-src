@@ -72,6 +72,8 @@ struct rc_client_t;
 
 // pcsx2/Memory.cpp: allocate + TXM-register the JIT code region early (1 ready, 0 n/a, -1 no script).
 namespace SysMemory { int ReserveCodeMemoryForJIT(); }
+// pcsx2/SIO/Sio.h: recent memory card writes (save states are refused while the card is busy).
+namespace MemcardBusy { bool IsBusy(); }
 #include "3rdparty/simpleini/include/SimpleIni.h"
 #include "pcsx2/INISettingsInterface.h"
 
@@ -217,20 +219,31 @@ static void iPSX2_PostGameChanged()
     });
 }
 
-// [iPSX2 #17] Vibration settings from the INI (also pushed by SettingsStore when they change).
-static void iPSX2_LoadVibrationSettings()
+// [iPSX2 #18] The controller's left stick also presses the D-pad (on by default): most PS2 menus,
+// BT4's included, only read the D-pad. Set from SettingsStore and the INI.
+static std::atomic<bool> s_leftStickAsDpad{true};
+
+extern "C" void iPSX2_SetLeftStickAsDpad(bool enabled) {
+    s_leftStickAsDpad.store(enabled, std::memory_order_relaxed);
+}
+
+// [iPSX2 #17][#18] Controller settings from the INI (also pushed by SettingsStore when they change).
+static void iPSX2_LoadControllerSettings()
 {
     extern INISettingsInterface* g_p44_settings_interface;
     bool enabled = true;
     float strength = 1.0f;
+    bool stickAsDpad = true;
     {
         std::lock_guard<std::mutex> lk(g_settingsMutex);
         if (g_p44_settings_interface) {
             enabled = g_p44_settings_interface->GetBoolValue("iPSX2/Gamepad", "Vibration", true);
             strength = g_p44_settings_interface->GetFloatValue("iPSX2/Gamepad", "VibrationStrength", 1.0f);
+            stickAsDpad = g_p44_settings_interface->GetBoolValue("iPSX2/Gamepad", "LeftStickAsDpad", true);
         }
     }
     iPSX2_SetControllerRumbleConfig(enabled, strength);
+    iPSX2_SetLeftStickAsDpad(stickAsDpad);
 }
 
 // Built-in JIT (iPSX2BuiltInJIT.mm): the VM thread sets up its memory once per launch, so JIT
@@ -429,7 +442,7 @@ extern "C" int iPSX2_ActivateBuiltInJIT(void) {
 
             // --- Initialize & Execute VM ---
             iPSX2_DropCPUThreadWork(); // [iPSX2 #17] nothing from a previous game carries over
-            iPSX2_LoadVibrationSettings();
+            iPSX2_LoadControllerSettings();
             if (VMManager::Initialize(boot_params)) {
                 Console.WriteLn("[VM] VM initialized successfully");
                 VMManager::SetState(VMState::Running);
@@ -895,6 +908,27 @@ namespace Host
                 pad->Set(PadDualshock2::Inputs::PAD_R_LEFT,  rx < 0 ? -rx : 0.0f);
                 pad->Set(PadDualshock2::Inputs::PAD_R_DOWN,  ry > 0 ? ry : 0.0f);
                 pad->Set(PadDualshock2::Inputs::PAD_R_UP,    ry < 0 ? -ry : 0.0f);
+
+                // [iPSX2 #18] The left stick also presses the D-pad, so it moves through game menus
+                // that only read the D-pad (BT4's do; in its fights the D-pad moves the fighter as
+                // well). Only adds presses: the button loop above already released the D-pad
+                // unless it is held for real. Hysteresis keeps a direction from flickering.
+                static bool s_stickDpadHeld[4] = {}; // up, down, left, right
+                if (s_leftStickAsDpad.load(std::memory_order_relaxed)) {
+                    static const u32 dirs[4] = {
+                        PadDualshock2::Inputs::PAD_UP, PadDualshock2::Inputs::PAD_DOWN,
+                        PadDualshock2::Inputs::PAD_LEFT, PadDualshock2::Inputs::PAD_RIGHT,
+                    };
+                    const float amount[4] = { ly < 0 ? -ly : 0.0f, ly > 0 ? ly : 0.0f, lx < 0 ? -lx : 0.0f, lx > 0 ? lx : 0.0f };
+                    for (int d = 0; d < 4; d++) {
+                        s_stickDpadHeld[d] = s_stickDpadHeld[d] ? (amount[d] > 0.35f) : (amount[d] > 0.55f);
+                        if (s_stickDpadHeld[d])
+                            pad->Set(dirs[d], 1.0f);
+                    }
+                } else {
+                    for (bool& held : s_stickDpadHeld)
+                        held = false;
+                }
             }
         }
     }
@@ -941,21 +975,50 @@ extern "C" bool iPSX2_RequestSaveState(int slot, bool save) {
     Console.WriteLn("@@SAVESTATE@@ %s slot=%d requested", save ? "save" : "load", slot);
     Host::RunOnCPUThread([slot, save]() {
         bool ok = false;
+        std::string reason; // [iPSX2 #18] shown by the controller menu (the OSD is frozen while paused)
         if (VMManager::HasValidVM()) {
             Common::Timer timer;
+            const std::string serial = VMManager::GetDiscSerial();
+            const u32 crc = VMManager::GetDiscCRC();
+            const bool had_state = VMManager::HasSaveStateInSlot(serial.c_str(), crc, slot);
             // Zip on this thread: the file is complete when the menu is told to refresh (zstd
             // takes a fraction of a second on these iPads).
             ok = save ? VMManager::SaveStateToSlot(slot, false) : VMManager::LoadStateFromSlot(slot);
             Console.WriteLn("@@SAVESTATE@@ %s slot=%d ok=%d serial=%s crc=%08X ms=%.0f", save ? "save" : "load", slot,
-                ok ? 1 : 0, VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC(), timer.GetTimeMilliseconds());
+                ok ? 1 : 0, serial.c_str(), crc, timer.GetTimeMilliseconds());
+            if (!ok) {
+                if (serial.empty())
+                    reason = "Save states need a game disc.";
+                else if (!save && !had_state)
+                    reason = "Slot " + std::to_string(slot) + " is empty.";
+                else if (MemcardBusy::IsBusy())
+                    reason = "The game is writing to its memory card. Try again in a few seconds.";
+                else
+                    reason = "Something went wrong. pcsx2_log.txt has the details.";
+            }
+        } else {
+            reason = "No game is running.";
         }
         dispatch_async(dispatch_get_main_queue(), ^{
+            NSString* message = [NSString stringWithUTF8String:reason.c_str()] ?: @"";
             [[NSNotificationCenter defaultCenter] postNotificationName:@"iPSX2SaveStateFinished"
                                                                 object:nil
-                                                              userInfo:@{@"slot": @(slot), @"save": @(save), @"ok": @(ok)}];
+                                                              userInfo:@{@"slot": @(slot), @"save": @(save), @"ok": @(ok),
+                                                                         @"message": message}];
         });
     });
     return true;
+}
+
+// [iPSX2 #18] Pause/resume for the controller menu (main thread). VMManager::SetPaused has to run on
+// the VM thread: while running that is the next vsync; while paused the paused loop picks it up.
+extern "C" void iPSX2_SetEmulationPaused(bool paused) {
+    if (!s_vmThreadActive.load() || !VMManager::HasValidVM())
+        return;
+    Host::RunOnCPUThread([paused]() {
+        if (VMManager::HasValidVM() && (VMManager::GetState() == VMState::Paused) != paused)
+            VMManager::SetPaused(paused);
+    });
 }
 
 namespace Common {
