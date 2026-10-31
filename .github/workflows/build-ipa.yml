@@ -263,6 +263,25 @@ jobs:
           # services refuse uploads that are bigger than an earlier one); -X drops extra
           # file attributes that only add size.
           zip -qyr -9 -X "$IPA_PATH" Payload SwiftSupport
+          # Signulous silently turns away an IPA that is bigger than the build already installed,
+          # and every feature adds a little. Recompress with zopfli (advzip -4): the same zip
+          # format, a few percent smaller. The result is kept only if it tests clean and lists
+          # the same files, sizes and permissions as the zip -9 IPA.
+          if command -v advzip >/dev/null || HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install advancecomp >/dev/null 2>&1; then
+            listing() { zipinfo "$1" | awk 'NF >= 9 && $1 ~ /^[-dl]/ {print $1, $4, $NF}' | sort; }
+            cp "$IPA_PATH" "$IPA_PATH.zopfli"
+            if advzip -z -4 -i 5 "$IPA_PATH.zopfli" >/dev/null && unzip -tq "$IPA_PATH.zopfli" >/dev/null \
+               && [ "$(listing "$IPA_PATH")" = "$(listing "$IPA_PATH.zopfli")" ] \
+               && [ "$(stat -f%z "$IPA_PATH.zopfli")" -lt "$(stat -f%z "$IPA_PATH")" ]; then
+              echo "::notice title=zopfli::$(stat -f%z "$IPA_PATH") -> $(stat -f%z "$IPA_PATH.zopfli") bytes"
+              mv "$IPA_PATH.zopfli" "$IPA_PATH"
+            else
+              echo "::warning title=zopfli::the recompressed IPA did not check out; keeping the zip -9 one"
+              rm -f "$IPA_PATH.zopfli"
+            fi
+          else
+            echo "::warning title=zopfli::advancecomp is unavailable; keeping the zip -9 IPA"
+          fi
           echo "✅ IPA assembled: $(du -sh "$IPA_PATH" | cut -f1)"
           # Surface the exact size and the biggest files as annotations (readable via the API).
           echo "::notice title=IPA size::$(stat -f%z "$IPA_PATH") bytes"

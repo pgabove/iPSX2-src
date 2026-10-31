@@ -33,6 +33,8 @@ xcodebuild -project build-sim/iPSX2.xcodeproj \
 
 Real-device IPAs are re-signed with Sideloadly before sideloading — code signing is intentionally disabled in CMake (`CODE_SIGNING_REQUIRED=NO`).
 
+**IPA size (Signulous):** this fork's IPAs are installed through Signulous, which silently turns away an IPA bigger than the build already installed. CI (`.github/workflows/build-ipa.yml`) packs the IPA with `zip -9`, recompresses it with zopfli (`advzip -4`, kept only if the file listing matches), and reports the result as an `IPA size` annotation. Compare it with the previous build's before handing a build over.
+
 **Built-in JIT helper:** run `scripts/fetch_stikjit.sh` before generating a real-device project. It downloads StikJIT 1.9.0 (MPL-2.0) into `cpp/3rdparty/StikJIT` (git-ignored); CMake then builds the `iPSX2JITHelper` app extension from its sources and embeds it as `iPSX2.app/PlugIns/iPSX2JITHelper.appex`. Without that folder the helper is skipped and iPSX2 works only with StikDebug.
 
 No in-tree builds: CMake will error if `build/` is inside the source tree.
